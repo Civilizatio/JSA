@@ -8,3 +8,5 @@ __pycache__/
 *.pyd
 
 egs/
+
+test.py

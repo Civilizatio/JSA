@@ -1,6 +1,7 @@
 # src/samplers/misampler.py
 import torch
 from src.base.base_sampler import BaseSampler
+import torch.distributed as dist
 
 
 class MISampler(BaseSampler):
@@ -13,14 +14,12 @@ class MISampler(BaseSampler):
     ):
         self.joint_model = joint_model
         self.proposal_model = proposal_model
-        self._use_cache = use_cache
+        self.dataset_size = dataset_size
         
         # Acquire device from joint_model parameters
         self.device = next(joint_model.parameters()).device
+        self.use_cache = use_cache
 
-        if use_cache:
-            assert dataset_size is not None
-            self._init_cache(dataset_size, proposal_model.latent_dim)
 
     def to(self, device):
         if hasattr(self, "cache") and self.cache is not None:
@@ -33,8 +32,12 @@ class MISampler(BaseSampler):
         return self._use_cache
     
     @use_cache.setter
-    def use_cache(self, value):
+    def use_cache(self, value: bool):
         self._use_cache = value
+        if value and not hasattr(self, "cache"):
+            # initialize cache if not present
+            self._init_cache(self.dataset_size, self.proposal_model.latent_dim)
+            
    
     
     @torch.no_grad()
@@ -126,7 +129,8 @@ class MISampler(BaseSampler):
 
         # update cache
         if self.use_cache and idx is not None:
-            self.cache[idx] = h_next.detach()
+            id_tensor = torch.as_tensor(idx, device=self.device,dtype=torch.long)
+            self.cache[id_tensor] = h_next.detach().to(self.device)
 
         return h_next
 
@@ -196,7 +200,8 @@ class MISampler(BaseSampler):
 
         # Update cache
         if self.use_cache and idx is not None:
-            self.cache[idx] = h_old.detach()
+            id_tensor = torch.as_tensor(idx, device=self.device,dtype=torch.long)
+            self.cache[id_tensor] = h_old.detach().to(self.device)
 
         return h_old
 
@@ -210,6 +215,48 @@ class MISampler(BaseSampler):
     def load_state_dict(self, state):
         if "cache" in state:
             self.cache = state["cache"].to(self.device)
+            
+    @torch.no_grad()
+    def sync_cache(self):
+        """
+        Synchronize cache across all ranks.
+
+        Protocol:
+          - mask = (~isnan(cache)).float()
+          - cache_no_nan = cache with nans replaced by 0
+          - all_reduce SUM both cache_no_nan and mask
+          - averaged = cache_sum / mask_sum (mask_sum==0 -> leave as NaN)
+        After sync, all ranks have the same cache.
+        
+        Theoretically, our h is discrete, so averaging may not be ideal or even correct. However,
+        in practice, this works reasonably well because there will not two ranks update the same cache entry.
+        DDP ensures each rank has different data samples, so the cache indices updated by different ranks
+        should be different. Thus, averaging is equivalent to taking the non-nan value.
+        
+        """
+        
+        if not dist.is_available() or not dist.is_initialized():
+            return # No need to sync if not distributed
+        
+        cache = self.cache
+        device = cache.device
+        
+        mask = (~torch.isnan(cache)).float().to(device)
+        cache_no_nan = cache.clone()
+        cache_no_nan = torch.nan_to_num(cache_no_nan, nan=0.0)
+        
+        dist.all_reduce(cache_no_nan, op=dist.ReduceOp.SUM)
+        dist.all_reduce(mask, op=dist.ReduceOp.SUM)
+        
+        denom = mask.clamp(min=1.0) # avoid division by zero
+        cache_synced = cache_no_nan / denom
+        
+        zero_mask = (mask == 0)
+        if zero_mask.any():
+            cache_synced[zero_mask] = float("nan")
+            
+        self.cache.copy_(cache_synced.to(device))
+        
 
 
 if __name__ == "__main__":

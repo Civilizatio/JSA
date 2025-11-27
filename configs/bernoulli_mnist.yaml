@@ -24,6 +24,7 @@ model:
     num_mis_steps: 2
     cache_start_epoch: 600
 
+
 data:
   class_path: src.data.binary_mnist.BinaryMNISTDataModule
   init_args:
@@ -54,16 +55,31 @@ trainer:
     #     monitor: valid/nll
     #     mode: min
     #     patience: 10
+
+    - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+      init_args:
+        save_top_k: -1 # save all checkpoints
+        filename: last-checkpoint
+        every_n_epochs: 1
     - class_path: lightning.pytorch.callbacks.LearningRateMonitor
       init_args:
         logging_interval: step
     - class_path: lightning.pytorch.callbacks.ModelSummary
       init_args:
         max_depth: 2
+    - class_path: src.utils.grad_norm_callback.GradientNormCallback
+      init_args:
+        norm_type: 2
+        log_every_n_steps: 1
 
   max_epochs: 1000
-  accelerator: auto
-  devices: [2]
+  accelerator: gpu
+  devices: [2,3,4,5]
+  strategy: ddp_find_unused_parameters_true
+  precision: 32
   enable_progress_bar: true
   log_every_n_steps: 50
-  # log_every_n_epochs: 1
+ 
+
+
+  
