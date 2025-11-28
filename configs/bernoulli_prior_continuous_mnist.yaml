@@ -4,11 +4,12 @@ model:
   class_path: src.models.jsa.JSA
   init_args:
     joint_model:
-      _target_: src.models.components.joint_model.JointModel
+      _target_: src.models.components.joint_model.JointModelBernoulliGaussian
       latent_dim: 200
       layers: [200, 200]
       output_dim: 784
       activation: leakyrelu
+      final_activation: tanh
     proposal_model:
       _target_: src.models.components.proposal_model.ProposalModel
       input_dim: 784
@@ -26,7 +27,7 @@ model:
 
 
 data:
-  class_path: src.data.binary_mnist.BinaryMNISTDataModule
+  class_path: src.data.mnist.MNISTDataModule
   init_args:
     root: ./data
     batch_size: 50
@@ -37,7 +38,7 @@ trainer:
     class_path: lightning.pytorch.loggers.tensorboard.TensorBoardLogger
     init_args:
       save_dir: ./egs/bernoulli_mnist
-      name: binary_mnist
+      name: continuous_mnist
 
   callbacks:
     

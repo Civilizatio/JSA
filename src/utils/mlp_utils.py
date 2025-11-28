@@ -39,7 +39,7 @@ def get_act_func_by_name(name):
     return mapping[name]()
 
 
-def build_mlp(input_dim, layers, output_dim, activation):
+def build_mlp(input_dim, layers, output_dim, activation, final_activation=None):
     """
     Build a multi-layer perceptron (MLP).
     Args:
@@ -47,6 +47,10 @@ def build_mlp(input_dim, layers, output_dim, activation):
         layers (list of int): List of hidden layer sizes.
         output_dim (int): Output dimension.
         activation (str): Name of the activation function.
+        final_activation (str, optional): Name of the final activation function. Defaults to None.
+            - If "sigmoid", output will be in [0, 1]
+            - If "tanh", output will be in [-1, 1]
+            - If None, no activation on final layer.
     Returns:
         nn.Sequential: The constructed MLP.
     """
@@ -58,5 +62,10 @@ def build_mlp(input_dim, layers, output_dim, activation):
         modules.append(act_func)
         in_dim = layer_dim
     # Last layer without activation
-    modules.append(nn.Linear(in_dim, output_dim))
+    if final_activation is not None:
+        modules.append(nn.Linear(in_dim, output_dim))
+        final_act_func = get_act_func_by_name(final_activation)
+        modules.append(final_act_func)
+    else:
+        modules.append(nn.Linear(in_dim, output_dim))
     return nn.Sequential(*modules)

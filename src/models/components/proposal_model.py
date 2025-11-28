@@ -37,3 +37,16 @@ class ProposalModel(BaseProposalModel):
         return -torch.nn.functional.binary_cross_entropy_with_logits(
             logits, h, reduction="none"
         ).sum(dim=1)
+        
+    def forward(self, h, x):
+        """Compute negative log conditional probability as loss
+
+        Args:
+            h: latent variables
+            x: observed data
+
+        Returns:
+            loss: negative log conditional probability
+        """
+        log_cond = self.log_conditional_prob(h, x)
+        return -log_cond.mean()

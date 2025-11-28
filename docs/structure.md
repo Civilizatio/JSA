@@ -21,7 +21,7 @@
 ```text
 .
 ├── configs/                       # 配置文件夹
-│   ├── bernoulli_MNIST.yaml       # Bernoulli MNIST 实验配置文件
+│   ├── bernoulli_prior_binary_mnist.yaml       # Bernoulli MNIST 实验配置文件
 │   ├── categorical_MNIST.yaml     # Categorical MNIST 实验配置文件
 │   └── ...                        
 ├── data/                          # 数据相关存储文件夹

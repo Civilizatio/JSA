@@ -1,0 +1,85 @@
+seed_everything: 42
+
+model:
+  class_path: src.models.jsa.JSA
+  init_args:
+    joint_model:
+      _target_: src.models.components.joint_model.JointModelBernoulliBernoulli
+      latent_dim: 200
+      layers: [200, 200]
+      output_dim: 784
+      activation: leakyrelu
+    proposal_model:
+      _target_: src.models.components.proposal_model.ProposalModel
+      input_dim: 784
+      latent_dim: 200
+      layers: [200, 200]
+      activation: leakyrelu
+    sampler:
+      _target_: src.samplers.misampler.MISampler
+      use_cache: false # initial value, will be updated during training
+      dataset_size: 60000
+    lr_joint: 3e-4
+    lr_proposal: 3e-4
+    num_mis_steps: 2
+    cache_start_epoch: 600
+
+
+data:
+  class_path: src.data.binary_mnist.BinaryMNISTDataModule
+  init_args:
+    root: ./data
+    batch_size: 50
+    num_workers: 4
+
+trainer:
+  logger:
+    class_path: lightning.pytorch.loggers.tensorboard.TensorBoardLogger
+    init_args:
+      save_dir: ./egs/bernoulli_mnist
+      name: binary_mnist
+
+  callbacks:
+    
+    # - class_path: src.utils.redirect_print_callback.RedirectPrintCallback
+    #   init_args:
+    #     filename: training.log
+    - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+      init_args:
+        monitor: valid/nll
+        mode: min
+        save_top_k: 1
+        filename: best-checkpoint
+    # - class_path: lightning.pytorch.callbacks.EarlyStopping # 不使用早停
+    #   init_args:
+    #     monitor: valid/nll
+    #     mode: min
+    #     patience: 10
+
+    - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+      init_args:
+        save_top_k: -1 # save all checkpoints
+        filename: last-checkpoint
+        every_n_epochs: 1
+    - class_path: lightning.pytorch.callbacks.LearningRateMonitor
+      init_args:
+        logging_interval: step
+    - class_path: lightning.pytorch.callbacks.ModelSummary
+      init_args:
+        max_depth: 2
+    - class_path: src.utils.grad_norm_callback.GradientNormCallback
+      init_args:
+        norm_type: 2
+        log_every_n_steps: 1
+
+  max_epochs: 1000
+  accelerator: gpu
+  devices: [2,3,4,5]
+  strategy: ddp_find_unused_parameters_true
+  precision: 32
+  enable_progress_bar: true
+  log_every_n_steps: 50
+ 
+
+
+  
