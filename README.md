@@ -24,7 +24,7 @@ The categorical MNIST experiments are based on the implementation [ARSM](https:/
 训练指令：
 
 ```bash
-PYTHONPATH=. python scripts/run_bernoulli_mnist.py fit --config ./configs/bernoulli_prior_continuous_mnist.yaml
+PYTHONPATH=. python scripts/run_bernoulli_mnist.py fit --config ./configs/categorical_prior_continuous_mnist.yaml
 ```
 
 从 `checkpoints` 恢复训练指令：
@@ -39,5 +39,5 @@ PYTHONPATH=. python scripts/run_bernoulli_mnist.py fit \
 查看 TensorBoard 日志：
 
 ``` bash
-tensorboard --logdir=./egs/bernoulli_mnist/continuous_mnist/version_4 --port=6034
+tensorboard --logdir=egs/continuous_mnist/categorical_prior/version_6 --port=6034
 ```

@@ -5,18 +5,18 @@ model:
   init_args:
     joint_model:
       _target_: src.models.components.joint_model.JointModelCategoricalGaussian
-      num_categories: 10
-      num_latent_vars: 20
-      layers: [200, 200]
+      num_categories: [128, 128]
+      num_latent_vars: 2
+      layers: [200, 200, 200]
       output_dim: 784
       activation: leakyrelu
       final_activation: tanh
     proposal_model:
       _target_: src.models.components.proposal_model.ProposalModelCategorical
       input_dim: 784
-      num_categories: 10
-      num_latent_vars: 20
-      layers: [200, 200]
+      num_categories: [128, 128]
+      num_latent_vars: 2
+      layers: [200, 200, 200]
       activation: leakyrelu
     sampler:
       _target_: src.samplers.misampler.MISampler
@@ -24,15 +24,15 @@ model:
       dataset_size: 60000
     lr_joint: 3e-4
     lr_proposal: 3e-4
-    num_mis_steps: 2
-    cache_start_epoch: 600
+    num_mis_steps: 10
+    cache_start_epoch: 120
 
 
 data:
   class_path: src.data.mnist.MNISTDataModule
   init_args:
     root: ./data
-    batch_size: 50
+    batch_size: 500
     num_workers: 4
 
 trainer:
@@ -75,14 +75,14 @@ trainer:
         norm_type: 2
         log_every_n_steps: 1
 
-  max_epochs: 1000
+  max_epochs: 200
   accelerator: gpu
-  devices: [2]
-  # strategy: ddp_find_unused_parameters_true
-  strategy: auto
+  devices: [4,5,6,7]
+  strategy: ddp_find_unused_parameters_true
+  # strategy: auto
   precision: 32
   enable_progress_bar: true
-  log_every_n_steps: 50
+  log_every_n_steps: 25
  
 
 

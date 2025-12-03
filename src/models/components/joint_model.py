@@ -227,13 +227,20 @@ class JointModelCategoricalGaussian(BaseJointModel):
         self.num_latent_vars = num_latent_vars
         self.output_dim = output_dim
 
-        if isinstance(num_categories, int):
-            self._num_categories = [num_categories] * num_latent_vars
-        elif isinstance(num_categories, list):
-            assert len(num_categories) == num_latent_vars, "num_categories must be an integer or a list of length num_latent_vars"
-            self._num_categories = num_categories
+        if len(num_categories) == 1 and num_latent_vars > 1:
+            self._num_categories = list(num_categories) * num_latent_vars
         else:
-            raise ValueError("num_categories must be an integer or a list")
+            assert len(num_categories) == num_latent_vars, "num_categories must be an integer or a list of length num_latent_vars"
+            self._num_categories = list(num_categories)
+        
+        # if isinstance(num_categories, int):
+        #     self._num_categories = [num_categories] * num_latent_vars
+        # elif isinstance(num_categories, list):
+        #     assert len(num_categories) == num_latent_vars, "num_categories must be an integer or a list of length num_latent_vars"
+        #     self._num_categories = num_categories
+        # else:
+        #     raise ValueError("num_categories must be an integer or a list")
+        print(f"num_categories type: {type(num_categories)}, value: {num_categories}")
         
         self.total_num_categories = sum(self._num_categories)
         self.net = build_mlp(
