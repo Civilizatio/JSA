@@ -49,7 +49,9 @@ class ProposalModelBernoulli(BaseProposalModel):
             .permute(1, 2, 0)
             .contiguous()
         )  # [B, latent_dim, num_samples]
-        return h_samples.squeeze()  # [B, latent_dim, num_samples] if num_samples>1 else [B, latent_dim]
+        return (
+            h_samples.squeeze()
+        )  # [B, latent_dim, num_samples] if num_samples>1 else [B, latent_dim]
 
     def log_conditional_prob(self, h, x):
         logits = self.net(x)  # [B, latent_dim]
@@ -108,9 +110,11 @@ class ProposalModelCategorical(BaseProposalModel):
         if len(num_categories) == 1 and num_latent_vars > 1:
             self._num_categories = list(num_categories) * num_latent_vars
         else:
-            assert len(num_categories) == num_latent_vars, "num_categories must be an integer or a list of length num_latent_vars"
+            assert (
+                len(num_categories) == num_latent_vars
+            ), "num_categories must be an integer or a list of length num_latent_vars"
             self._num_categories = list(num_categories)
-        
+
         self.total_num_categories = sum(self._num_categories)
 
         self.net = build_mlp(
@@ -131,7 +135,7 @@ class ProposalModelCategorical(BaseProposalModel):
             x: Input tensor of shape [B, input_dim].
             num_samples: Number of samples to draw for each input.
             encoded: Whether to return encoded latent variables.
-            
+
         Returns:
             h_samples: Tensor of shape [B, num_latent_vars, num_samples] containing sampled latent variable indices.
 
@@ -139,25 +143,30 @@ class ProposalModelCategorical(BaseProposalModel):
 
         """
         logits = self.net(x)  # [B, total_num_categories]
-        
-        split_logits = torch.split(logits, self._num_categories, dim=-1) # List of [B, num_categories_i]
-        
+
+        split_logits = torch.split(
+            logits, self._num_categories, dim=-1
+        )  # List of [B, num_categories_i]
+
         h_samples_list = []
         for i, logit in enumerate(split_logits):
             probs = torch.softmax(logit, dim=-1)  # [B, num_categories_i]
             h_samples = torch.multinomial(
                 probs, num_samples=num_samples, replacement=True
             )  # [B, num_samples]
-            h_samples = h_samples.view(
-                -1, 1, num_samples
-            )  # [B, 1, num_samples]
+            h_samples = h_samples.view(-1, 1, num_samples)  # [B, 1, num_samples]
             h_samples_list.append(h_samples)
-        h_samples = torch.cat(h_samples_list, dim=1)  # [B, num_latent_vars, num_samples], each entry is index of category
+        h_samples = torch.cat(
+            h_samples_list, dim=1
+        )  # [B, num_latent_vars, num_samples], each entry is index of category
         if encoded:
-            h_samples = self.encode_latent(h_samples, encoding_method="one_hot")  # [B, total_num_categories, num_samples]
-        
-        return h_samples.squeeze() # [B, total_num_categories, num_samples] if num_samples>1 else [B, total_num_categories]
-            
+            h_samples = self.encode_latent(
+                h_samples, encoding_method="one_hot"
+            )  # [B, total_num_categories, num_samples]
+
+        return (
+            h_samples.squeeze()
+        )  # [B, total_num_categories, num_samples] if num_samples>1 else [B, total_num_categories]
 
     def encode_latent(self, h, encoding_method="one_hot"):
         """Encode the latent variable indices into one-hot or sinusoidal encoding.
@@ -183,13 +192,15 @@ class ProposalModelCategorical(BaseProposalModel):
                     h_i.long(), num_classes=self._num_categories[i]
                 ).float()  # [B, num_samples, num_categories_i]
                 encoded_h_list.append(h_i_one_hot)  # [B, num_samples, num_categories_i]
-            encoded_h = torch.cat(encoded_h_list, dim=-1).permute(0, 2, 1)  # [B, total_num_categories, num_samples]
+            encoded_h = torch.cat(encoded_h_list, dim=-1).permute(
+                0, 2, 1
+            )  # [B, total_num_categories, num_samples]
         elif encoding_method == "sinusoidal":
             # Implement sinusoidal encoding if needed
             raise NotImplementedError("Sinusoidal encoding not implemented yet.")
         else:
             raise ValueError(f"Unknown encoding method: {encoding_method}")
-        return encoded_h # [B, total_num_categories, num_samples]
+        return encoded_h  # [B, total_num_categories, num_samples]
 
     def log_conditional_prob(self, h, x):
         """Compute log q(h|x)
@@ -203,26 +214,28 @@ class ProposalModelCategorical(BaseProposalModel):
 
         For each latent variable, we compute the log probability of the sampled category given x.
 
-        
+
         log q(h_i = h | x) = logits_{i, h} - log sum_{c} exp(logits_{i, c})
-        
+
 
         Then sum over all latent variables to get log q(h|x).
 
-        
+
         log q(h|x) = sum_{i=1}^{num_latent_vars} log q(h_i | x)
-        
+
         """
 
         logits = self.net(x)  # [B, latent_dim * num_latent_vars]
-        split_logits = torch.split(logits, self._num_categories, dim=-1)  # List of [B, num_categories_i]
-        split_h = torch.split(h.squeeze(), self._num_categories, dim=-1)  # List of [B, num_categories_i]
+        split_logits = torch.split(
+            logits, self._num_categories, dim=-1
+        )  # List of [B, num_categories_i]
+        split_h = torch.split(
+            h.squeeze(), self._num_categories, dim=-1
+        )  # List of [B, num_categories_i]
         log_cond = 0
         for logit, h_i in zip(split_logits, split_h):
             # logit: [B, num_categories_i], h_i: [B, num_categories_i]
-            logit_selected = torch.sum(
-                logit * h_i, dim=-1
-            )  # [B]
+            logit_selected = torch.sum(logit * h_i, dim=-1)  # [B]
             log_sum_exp = torch.logsumexp(logit, dim=-1)  # [B]
             log_cond += logit_selected - log_sum_exp  # [B]
         return log_cond  # [B]

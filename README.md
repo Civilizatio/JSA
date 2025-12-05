@@ -42,7 +42,7 @@ PYTHONPATH=. python scripts/run_mnist.py fit \
 查看 TensorBoard 日志：
 
 ``` bash
-tensorboard --logdir=egs/continuous_mnist/categorical_prior/version_6 --port=6034
+tensorboard --logdir=egs/continuous_mnist/categorical_prior/version_20 --port=6034
 ```
 
 ## Future development

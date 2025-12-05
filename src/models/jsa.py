@@ -7,6 +7,9 @@ import torch.distributed as dist
 
 from src.samplers.misampler import MISampler
 from src.base.base_jsa_modules import BaseJointModel, BaseProposalModel
+import math
+import numpy as np
+import matplotlib.pyplot as plt
 
 
 class JSA(LightningModule):
@@ -35,7 +38,14 @@ class JSA(LightningModule):
         self.num_mis_steps = num_mis_steps
         self.cache_start_epoch = cache_start_epoch
 
+        # For visualization during validation
         self.validation_step_outputs = []
+        
+        # For testing
+        self.num_latent_vars = self.proposal_model.num_latent_vars
+        self.num_categories = self.proposal_model._num_categories
+        self.codebook_size = math.prod(self.num_categories)
+        self.codebook_counter = torch.zeros(self.codebook_size, dtype=torch.int32, device=self.device)
 
     def forward(self, x, idx=None):
 
@@ -43,14 +53,29 @@ class JSA(LightningModule):
             idx = idx.tolist()
             h = self.sampler.sample(x, idx=idx, num_steps=self.num_mis_steps)
         else:  # use proposal model directly
-            h = self.proposal_model.sample_latent(x, num_samples=1) # [B, latent_dim, 1]
+            h = self.proposal_model.sample_latent(
+                x, num_samples=1
+            )  # [B, latent_dim, 1]
             h = h.squeeze()
         x_hat = self.joint_model.sample(h=h)
         return x_hat
 
+    @classmethod
+    def load_model(cls, config_path: str, checkpoint_path: str, device: str = "cpu"):
+        """Load model from config and checkpoint paths"""
+        from omegaconf import OmegaConf
+
+        config = OmegaConf.load(config_path)
+        model = cls.load_from_checkpoint(checkpoint_path, **config.model.init_args)
+        model.to(device)
+        model.sampler.to(device)
+        return model.eval()
+
     def setup(self, stage=None):
         device = self.device
         self.sampler.to(device)
+        
+        self.codebook_counter = torch.zeros(self.codebook_size, dtype=torch.int32, device=device)
 
     def configure_optimizers(self):
         opt_joint = torch.optim.Adam(self.joint_model.parameters(), lr=self.lr_joint)
@@ -126,7 +151,61 @@ class JSA(LightningModule):
         )
 
         self.validation_step_outputs.clear()  # free memory
+        
+    @torch.no_grad()
+    def test_step(self, batch, batch_idx):
+        x, _, idx = batch  # x: [B, D], idx: [B,]
+        idx = idx.tolist()
 
+        nll = -self.get_nll(x, idx=idx)
+
+        self.log("test/nll", nll.mean(), prog_bar=True, sync_dist=True)
+
+        # Update codebook counter
+        
+        h = self.proposal_model.sample_latent(x, num_samples=1, encoded=False)
+        # Calculate 1D indices from multi-dimensional categorical latent variables
+        weights = torch.tensor(
+            [math.prod(self.num_categories[i + 1 :]) for i in range(self.num_latent_vars)],
+            device=self.device,
+            dtype=torch.float32,
+        )
+
+        # Calculate indices
+        indices = torch.matmul(h.float(), weights)  # [B]
+        indices = indices.long()
+        self.codebook_counter.index_add_(0, indices, torch.ones_like(indices, dtype=torch.int32))
+
+    def on_test_epoch_end(self):
+        if dist.is_available() and dist.is_initialized():
+            # gather codebook_counter from all ranks
+            dist.all_reduce(self.codebook_counter, op=dist.ReduceOp.SUM)
+            
+        used_codewords = torch.sum(self.codebook_counter > 0).item()
+        utilization_rate = used_codewords / self.codebook_size * 100
+        self.logger.experiment.add_text(
+            "test/codebook_utilization",
+            f"Used codewords: {used_codewords}/{self.codebook_size}, Utilization rate: {utilization_rate:.4f}%",
+            self.current_epoch,
+        )
+        
+        # Plot codebook usage distribution
+        codebook_counter_cpu = self.codebook_counter.cpu().numpy()
+        codebook_counter_cpu = np.sort(codebook_counter_cpu)[::-1]
+        plt.figure(figsize=(12, 6))
+        plt.bar(range(self.codebook_size), codebook_counter_cpu, width=1.0)
+        plt.xlabel("Codeword Index")
+        plt.ylabel("Usage Count")
+        plt.title("Codebook Usage Distribution")
+        plt.tight_layout()
+        self.logger.experiment.add_figure(
+            "test/codebook_usage_distribution",
+            plt.gcf(),
+            self.current_epoch,
+        )
+        plt.close()
+        
+    
     def state_dict(self):
         state = super().state_dict()
         # include sampler state

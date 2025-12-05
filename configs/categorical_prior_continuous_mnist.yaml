@@ -5,18 +5,18 @@ model:
   init_args:
     joint_model:
       _target_: src.models.components.joint_model.JointModelCategoricalGaussian
-      num_categories: [128, 128]
-      num_latent_vars: 2
-      layers: [200, 200, 200]
+      num_categories: [10]
+      num_latent_vars: 5
+      layers: [200, 200]
       output_dim: 784
       activation: leakyrelu
       final_activation: tanh
     proposal_model:
       _target_: src.models.components.proposal_model.ProposalModelCategorical
       input_dim: 784
-      num_categories: [128, 128]
-      num_latent_vars: 2
-      layers: [200, 200, 200]
+      num_categories: [10]
+      num_latent_vars: 5
+      layers: [200, 200]
       activation: leakyrelu
     sampler:
       _target_: src.samplers.misampler.MISampler
@@ -24,7 +24,7 @@ model:
       dataset_size: 60000
     lr_joint: 3e-4
     lr_proposal: 3e-4
-    num_mis_steps: 10
+    num_mis_steps: 2
     cache_start_epoch: 120
 
 
