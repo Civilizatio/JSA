@@ -7,6 +7,7 @@ model:
       _target_: src.models.components.joint_model.JointModelCategoricalGaussian
       num_categories: [10]
       num_latent_vars: 5
+      embedding_dims: [4]
       layers: [200, 200]
       output_dim: 784
       activation: leakyrelu

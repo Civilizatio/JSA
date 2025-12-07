@@ -1,7 +1,8 @@
 # src/base/base_sampler.py
 from abc import ABC, abstractmethod
+from torch.nn import Module
 
-class BaseSampler(ABC):
+class BaseSampler(ABC, Module):
     """Base sampler for JSA framework"""
 
     @abstractmethod
@@ -33,14 +34,4 @@ class BaseSampler(ABC):
             samples: Generated samples
             log_qs: Log probabilities of the samples
         """
-        pass
-    
-    @abstractmethod
-    def state_dict(self):
-        """Return the state of the sampler for checkpointing"""
-        pass
-    
-    @abstractmethod
-    def load_state_dict(self, state_dict):
-        """Load the sampler state from checkpoint"""
         pass

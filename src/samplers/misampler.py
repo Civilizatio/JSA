@@ -5,61 +5,80 @@ import torch.distributed as dist
 
 
 class MISampler(BaseSampler):
+    """Metropolis Independence Sampler (MIS) for sampling latent variables h ~ p_theta (h|x)
+
+    Algorithm:
+        1. Propose h' ~ q_phi(h|x)
+        2. Compute acceptance probability:
+            a = p_theta(x,h') * q_phi(h|x) / (p_theta(x,h) * q_phi(h'|x))
+        3. Accept/reject:
+            h = h' with probability min(1, a)
+            h = h  with probability 1 - min(1, a)
+
+    Cache mechanism:
+        - If use_cache=True, maintain a cache of latent variables for each data point.
+        - During sampling, retrieve h_old from cache for the given data index.
+        - After sampling, update the cache with the new accepted h.
+
+    Args:
+        joint_model: The joint model p_theta(x,h)
+        proposal_model: The proposal model q_phi(h|x)
+        use_cache: Whether to use cache mechanism
+        dataset_size: Size of the dataset (required if use_cache is True)
+    """
+
     def __init__(
         self,
         joint_model,  # p(x, h)
         proposal_model,  # q(h|x)
-        use_cache=True,  # whether to use cache mechanism
+        use_cache=False,  # whether to use cache mechanism
         dataset_size=None,  # required if use_cache is True
     ):
+        super().__init__()
         self.joint_model = joint_model
         self.proposal_model = proposal_model
         self.dataset_size = dataset_size
-        
-        # Acquire device from joint_model parameters
-        self.device = next(joint_model.parameters()).device
-        self.use_cache = use_cache
+        self.use_cache = use_cache # use the setter, which initializes cache if needed
 
 
-    def to(self, device):
-        if hasattr(self, "cache") and self.cache is not None:
-            self.cache = self.cache.to(device)
-        self.device = device
-        return self
-    
+
     @property
     def use_cache(self):
         return self._use_cache
-    
+
     @use_cache.setter
     def use_cache(self, value: bool):
         self._use_cache = value
         if value and not hasattr(self, "cache"):
             # initialize cache if not present
-            self._init_cache(self.dataset_size, self.proposal_model.latent_dim)
-            
-   
-    
+            self._init_cache(self.dataset_size, self.proposal_model.num_latent_vars)
+
     @torch.no_grad()
-    def _init_cache(self, dataset_size, latent_dim):
-        """Initialize cache by sampling from proposal model
+    def _init_cache(self, dataset_size, num_latent_vars):
+        """ Initialize cache by sampling from proposal model
 
         You may modify this method to change the initialization strategy.
         """
-        self.cache = torch.full(
-            (dataset_size, latent_dim), float("nan"), device=self.device
+        self.register_buffer(
+            "cache",
+            torch.full(
+                (dataset_size, num_latent_vars),
+                float("nan"),
+                device = next(self.proposal_model.parameters()).device,
+            ),
         )
 
     @torch.no_grad()
     def _init_h_old(self, idx, h_new):
+        h_new = h_new.squeeze(-1)  # [batch_size, num_latent_vars]
         if self.use_cache and idx is not None:
-            h_old = self.cache[idx].to(self.device)
+            h_old = self.cache[idx] # [batch_size, num_latent_vars]
             nan_mask = torch.isnan(h_old)
             if nan_mask.any():
                 h_old[nan_mask] = h_new[nan_mask].clone()
         else:
             h_old = h_new.clone()
-        return h_old
+        return h_old.unsqueeze(-1)  # [batch_size, num_latent_vars, 1]
 
     @torch.no_grad()
     def _cal_acceptance_prob(self, x, h_new, h_old):
@@ -107,30 +126,29 @@ class MISampler(BaseSampler):
         """
 
         # x: [batch_size, ...]
-        # h_old: [batch_size, latent_dim]
+        # h_old: [batch_size, num_latent_vars, 1] or None
         # idx: [batch_size, ]
 
         # Get h_old from cache if using cache
         if h_old is None:
             # If there is no h_old provided, initialize from cache or proposal model
             h_old = self._init_h_old(idx, self.proposal_model.sample_latent(x))
-            
+
         # Propose from q_phi(h|x)
-        h_new = self.proposal_model.sample_latent(x)  # [batch_size, latent_dim]
+        h_new = self.proposal_model.sample_latent(x)  # [batch_size, num_latent_vars, 1]
 
         # Compute acceptance probability
-        accept_prob = self._cal_acceptance_prob(x, h_new, h_old)
+        accept_prob = self._cal_acceptance_prob(x, h_new, h_old) # [batch_size, 1]
 
         u = torch.rand_like(accept_prob)
-        accept = (u < accept_prob).float().unsqueeze(-1)  # [batch_size, 1]
+        accept = (u < accept_prob).float().unsqueeze(-1)  # [batch_size, 1, 1]
 
         # Update sample
-        h_next = accept * h_new + (1 - accept) * h_old
+        h_next = accept * h_new + (1 - accept) * h_old # [batch_size, num_latent_vars, 1]
 
         # update cache
         if self.use_cache and idx is not None:
-            id_tensor = torch.as_tensor(idx, device=self.device,dtype=torch.long)
-            self.cache[id_tensor] = h_next.detach().to(self.device)
+            self.cache[idx] = h_next.detach().squeeze(-1)
 
         return h_next
 
@@ -176,17 +194,17 @@ class MISampler(BaseSampler):
             )
 
         # Initialize h_old from cache or proposal model
-        h_old = self._init_h_old(idx, self.proposal_model.sample_latent(x))
+        h_old = self._init_h_old(idx, self.proposal_model.sample_latent(x)) # [batch_size, num_latent_vars, 1]
 
         # Generate all proposal samples in parallel
         h_new = self.proposal_model.sample_latent(
-            x.unsqueeze(0).expand(num_steps, -1, -1)
-        )  # [num_steps, batch_size, latent_dim]
+            x, num_samples=num_steps
+        )  # [Batch, num_latent_vars, num_steps]
 
         # Sequentially compute acceptance probabilities and update samples
         for t in range(num_steps):
             # Get the t-th proposal sample
-            h_new_t = h_new[t]  # [batch_size, latent_dim]
+            h_new_t = h_new[:, :, t]  # [batch_size, num_latent_vars]
 
             # Compute acceptance probability
             accept_prob = self._cal_acceptance_prob(x, h_new_t, h_old)
@@ -200,22 +218,21 @@ class MISampler(BaseSampler):
 
         # Update cache
         if self.use_cache and idx is not None:
-            id_tensor = torch.as_tensor(idx, device=self.device,dtype=torch.long)
-            self.cache[id_tensor] = h_old.detach().to(self.device)
+            self.cache[idx] = h_old.detach()
 
         return h_old
 
-    def state_dict(self):
-        if not self.use_cache:
-            return {}
-        return {
-            "cache": self.cache.cpu(),
-        }  # Save cache as tensor
+    # def state_dict(self):
+    #     if not self.use_cache:
+    #         return {}
+    #     return {
+    #         "cache": self.cache.cpu(),
+    #     }  # Save cache as tensor
 
-    def load_state_dict(self, state):
-        if "cache" in state:
-            self.cache = state["cache"].to(self.device)
-            
+    # def load_state_dict(self, state):
+    #     if "cache" in state:
+    #         self.cache = state["cache"].to(self.device)
+
     @torch.no_grad()
     def sync_cache(self):
         """
@@ -227,36 +244,34 @@ class MISampler(BaseSampler):
           - all_reduce SUM both cache_no_nan and mask
           - averaged = cache_sum / mask_sum (mask_sum==0 -> leave as NaN)
         After sync, all ranks have the same cache.
-        
+
         Theoretically, our h is discrete, so averaging may not be ideal or even correct. However,
         in practice, this works reasonably well because there will not two ranks update the same cache entry.
         DDP ensures each rank has different data samples, so the cache indices updated by different ranks
         should be different. Thus, averaging is equivalent to taking the non-nan value.
-        
+
         """
-        
+
         if not dist.is_available() or not dist.is_initialized():
-            return # No need to sync if not distributed
-        
+            return  # No need to sync if not distributed
+
         cache = self.cache
-        device = cache.device
-        
-        mask = (~torch.isnan(cache)).float().to(device)
+
+        mask = (~torch.isnan(cache)).float()
         cache_no_nan = cache.clone()
         cache_no_nan = torch.nan_to_num(cache_no_nan, nan=0.0)
-        
+
         dist.all_reduce(cache_no_nan, op=dist.ReduceOp.SUM)
         dist.all_reduce(mask, op=dist.ReduceOp.SUM)
-        
-        denom = mask.clamp(min=1.0) # avoid division by zero
+
+        denom = mask.clamp(min=1.0)  # avoid division by zero
         cache_synced = cache_no_nan / denom
-        
-        zero_mask = (mask == 0)
+
+        zero_mask = mask == 0
         if zero_mask.any():
             cache_synced[zero_mask] = float("nan")
-            
-        self.cache.copy_(cache_synced.to(device))
-        
+
+        self.cache.copy_(cache_synced)
 
 
 if __name__ == "__main__":

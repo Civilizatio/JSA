@@ -41,16 +41,13 @@ class JSA(LightningModule):
         # For visualization during validation
         self.validation_step_outputs = []
         
-        # For testing
-        self.num_latent_vars = self.proposal_model.num_latent_vars
-        self.num_categories = self.proposal_model._num_categories
-        self.codebook_size = math.prod(self.num_categories)
-        self.codebook_counter = torch.zeros(self.codebook_size, dtype=torch.int32, device=self.device)
+        
+        
+        
 
     def forward(self, x, idx=None):
 
         if idx is not None:
-            idx = idx.tolist()
             h = self.sampler.sample(x, idx=idx, num_steps=self.num_mis_steps)
         else:  # use proposal model directly
             h = self.proposal_model.sample_latent(
@@ -72,10 +69,8 @@ class JSA(LightningModule):
         return model.eval()
 
     def setup(self, stage=None):
-        device = self.device
-        self.sampler.to(device)
-        
-        self.codebook_counter = torch.zeros(self.codebook_size, dtype=torch.int32, device=device)
+        pass
+       
 
     def configure_optimizers(self):
         opt_joint = torch.optim.Adam(self.joint_model.parameters(), lr=self.lr_joint)
@@ -86,7 +81,6 @@ class JSA(LightningModule):
 
     def training_step(self, batch, batch_idx):
         x, _, idx = batch  # x: [B, D], idx: [B,]
-        idx = idx.tolist()
 
         # MISampling step
         h = self.sampler.sample(x, idx=idx, num_steps=self.num_mis_steps)
@@ -123,7 +117,6 @@ class JSA(LightningModule):
 
     def validation_step(self, batch, batch_idx):
         x, _, idx = batch  # x: [B, D], idx: [B,]
-        idx = idx.tolist()
 
         nll = -self.get_nll(x, idx=idx)
 
@@ -134,6 +127,14 @@ class JSA(LightningModule):
 
         return {"valid_img": x[:16]}
 
+    def on_test_start(self):
+        # For testing
+        
+        self.num_latent_vars = self.proposal_model.num_latent_vars
+        self.num_categories = self.proposal_model._num_categories
+        self.codebook_size = math.prod(self.num_categories)
+        self.codebook_counter = torch.zeros(self.codebook_size, dtype=torch.int32, device=self.device)
+    
     def on_validation_epoch_end(self):
         # Show some reconstruction results
         x = self.validation_step_outputs[0]  # [16, D]
@@ -155,7 +156,6 @@ class JSA(LightningModule):
     @torch.no_grad()
     def test_step(self, batch, batch_idx):
         x, _, idx = batch  # x: [B, D], idx: [B,]
-        idx = idx.tolist()
 
         nll = -self.get_nll(x, idx=idx)
 

@@ -5,14 +5,14 @@ model:
   init_args:
     joint_model:
       _target_: src.models.components.joint_model.JointModelBernoulliBernoulli
-      latent_dim: 200
+      num_latent_vars: 200
       layers: [200, 200]
       output_dim: 784
       activation: leakyrelu
     proposal_model:
-      _target_: src.models.components.proposal_model.ProposalModel
+      _target_: src.models.components.proposal_model.ProposalModelBernoulli
       input_dim: 784
-      latent_dim: 200
+      num_latent_vars: 200
       layers: [200, 200]
       activation: leakyrelu
     sampler:
@@ -22,7 +22,7 @@ model:
     lr_joint: 3e-4
     lr_proposal: 3e-4
     num_mis_steps: 2
-    cache_start_epoch: 600
+    cache_start_epoch: 0
 
 
 data:

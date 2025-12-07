@@ -5,7 +5,7 @@ model:
   init_args:
     joint_model:
       _target_: src.models.components.joint_model.JointModelBernoulliGaussian
-      latent_dim: 200
+      num_latent_vars: 200
       layers: [200, 200]
       output_dim: 784
       activation: leakyrelu
@@ -13,7 +13,7 @@ model:
     proposal_model:
       _target_: src.models.components.proposal_model.ProposalModelBernoulli
       input_dim: 784
-      latent_dim: 200
+      num_latent_vars: 200
       layers: [200, 200]
       activation: leakyrelu
     sampler:
