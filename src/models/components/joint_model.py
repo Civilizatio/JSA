@@ -113,6 +113,21 @@ class JointModelBernoulliBernoulli(BaseJointModel):
             )  # [B, output_dim, num_samples]
         )
         return x_samples # [B, output_dim, num_samples]
+    
+    def decode(self, h):
+        """Decode x ~ p(x|h)
+
+        Args:
+            h: latent variables, shape [B, num_latent_vars]
+
+        Returns:
+            x_sample: sampled observed data, shape [B, output_dim]
+        """
+
+        logits_x = self.net(h)  # [B, output_dim]
+        probs_x = torch.sigmoid(logits_x)  # [B, output_dim]
+        x = (probs_x > 0.5).float()
+        return x  # [B, output_dim]
 
     def forward(self, x, h):
         """Compute negative log joint probability as loss
@@ -233,6 +248,21 @@ class JointModelBernoulliGaussian(BaseJointModel):
         x_samples = torch.clamp(x_samples, 0.0, 1.0).permute(1, 2, 0)  # [B, output_dim, num_samples]
 
         return x_samples # [B, output_dim, num_samples]
+    
+    def decode(self, h):
+        """Decode x ~ p(x|h)
+
+        Args:
+            h: latent variables, shape [B, num_latent_vars]
+
+        Returns:
+            x_sample: sampled observed data, shape [B, output_dim]
+        """
+
+        mean_x = self.net(h)  # [B, output_dim]
+        mean_x = self.post_process(mean_x)  # ensure mean is in [0, 1]
+
+        return mean_x  # [B, output_dim]
 
     def forward(self, x, h):
         """Compute negative log joint probability as loss
@@ -383,10 +413,17 @@ class JointModelCategoricalGaussian(BaseJointModel):
         mean_x = self.post_process(mean_x)  # ensure mean is in [0, 1]
         mean_x = mean_x.view(B, num_samples, self.output_dim)  # [B, num_samples, output_dim]
 
-        gaussian_dist = torch.distributions.Normal(loc=mean_x, scale=self.SIGMA)
-        log_p_x_given_h = gaussian_dist.log_prob(x.unsqueeze(1)).sum(
-            dim=2
-        )  # sum over dimensions, shape [B, num_samples]
+        # gaussian_dist = torch.distributions.Normal(loc=mean_x, scale=self.SIGMA)
+        # log_p_x_given_h = gaussian_dist.log_prob(x.unsqueeze(1)).sum(
+        #     dim=2
+        # )  # sum over dimensions, shape [B, num_samples]
+        
+        # We only need to calculate: -0.5 * sum((x - mean_x)^2) / sigma^2 - 0.5 * log(2 * pi * sigma^2)
+        # since sigma is fixed, we can ignore the constant term - 0.5 * log(2 * pi * sigma^2)
+        # Thus, we can use MSE loss as negative log likelihood
+        x = x.unsqueeze(1)  # [B, 1, output_dim]
+        mse_loss = nn.MSELoss(reduction="none")
+        log_p_x_given_h = -mse_loss(mean_x, x).sum(dim=2)/ (2 * self.SIGMA ** 2)  # shape [B, num_samples]
 
         return log_p_h + log_p_x_given_h  # log p(x, h)
 
@@ -409,11 +446,11 @@ class JointModelCategoricalGaussian(BaseJointModel):
             ]
             h = torch.cat(h_indices, dim=-1)  # shape [1, num_latent_vars]
 
-        h_coded = [
+        h_embedded = [
             embedding(h[:, i].long())  # [B, num_latent_vars] -> [B, embedding_dim]
             for i, embedding in enumerate(self.embeddings)
         ]
-        h_densed = torch.cat(h_coded, dim=-1)  # [B, latent_dim]
+        h_densed = torch.cat(h_embedded, dim=-1)  # [B, latent_dim]
         
         mean_x = self.net(h_densed)  # [B, output_dim]
         mean_x = self.post_process(mean_x)  # ensure mean is in [0, 1]
@@ -422,6 +459,27 @@ class JointModelCategoricalGaussian(BaseJointModel):
         x_samples = gaussian_dist.sample((num_samples,))
         x_samples = torch.clamp(x_samples, 0.0, 1.0).permute(1, 2, 0)  # [B, output_dim, num_samples]
         return x_samples  # [B, output_dim, num_samples]
+    
+    def decode(self, h):
+        """Decode x ~ p(x|h)
+
+        Args:
+            h: latent variables, shape [B, num_latent_vars]
+
+        Returns:
+            x_sample: sampled observed data, shape [B, output_dim]
+        """
+
+        h_embedded = [
+            embedding(h[:, i].long())  # [B, num_latent_vars] -> [B, embedding_dim]
+            for i, embedding in enumerate(self.embeddings)
+        ]
+        h_densed = torch.cat(h_embedded, dim=-1)  # [B, latent_dim]
+        
+        mean_x = self.net(h_densed)  # [B, output_dim]
+        mean_x = self.post_process(mean_x)  # ensure mean is in [0, 1]
+
+        return mean_x  # [B, output_dim]
 
     def forward(self, x, h):
         """Compute negative log joint probability as loss

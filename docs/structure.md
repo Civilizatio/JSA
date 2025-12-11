@@ -104,6 +104,7 @@ $$
 - 生成模型 `joint_model` 需要提供的接口是：
   - `log_joint_prob(x, h)`：计算联合概率的对数 $\log p_\theta(x, h)$。
     这里的计算需要根据不同的假设，利用 $\log p_\theta(x|h)$ 和 $\log p(h)$ 来计算。我们可以假设 $h\sim p(h)$ 是一个离散的 Bernoulli 分布，或者 categorical 分布等。而 $p_\theta(x|h)$ 可以假设为高斯分布。
+    当我们假设 $p_\theta(x|h)$ 是高斯分布时，我们使用 VAE 中的做法，即神经网络只输出均值，方差使用一个固定的超参数。在优化的时候使用 `MSE` 损失来优化均值。但是还需要使用联合概率 $\log p_\theta(x, h)$ 来接受拒绝采样。去掉常数后，我们最后返回的是 $\log p_\theta(x, h)= -\frac{\|x-\mu(x|h)\|_2^2}{2\sigma^2}$ 的值，其中 $\mu(x|h)$ 是神经网络输出的均值，$\sigma^2$ 是一个固定的超参数。
 - 推断模型 `proposal_model` 需要提供的接口是：
   - `log_conditional_prob(h, x)`：计算条件概率的对数 $\log q_\phi(h|x)$。
     这里的计算也需要根据不同的假设，利用 $\log q_\phi(h|x)$ 来计算。我们可以假设 $h\sim q_\phi(h|x)$ 是一个离散的 Bernoulli 分布，或者 categorical 分布等。

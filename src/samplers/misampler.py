@@ -201,10 +201,10 @@ class MISampler(BaseSampler):
         """
 
         # Check if multi-step sampling is meaningful
-        if not self.use_cache and num_steps > 1:
-            raise ValueError(
-                "Multi-step sampling (num_steps > 1) is not meaningful when use_cache=False."
-            )
+        # if not self.use_cache and num_steps > 1:
+        #     raise ValueError(
+        #         "Multi-step sampling (num_steps > 1) is not meaningful when use_cache=False."
+        #     )
 
         # Initialize h_old from cache or proposal model
         h_old = self._init_h_old(
@@ -244,7 +244,7 @@ class MISampler(BaseSampler):
     def state_dict(self):
         if not self.use_cache:
             return {}
-        
+
         return {
             "cache": self.cache.cpu(),
         }

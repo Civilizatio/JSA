@@ -29,7 +29,7 @@ class ProposalModelBernoulli(BaseProposalModel):
         self.num_latent_vars = num_latent_vars
         self._latent_dim = num_latent_vars
         self.input_dim = input_dim
-        
+
         self._categories = [2] * num_latent_vars  # for compatibility
 
         self.net = build_mlp(
@@ -58,13 +58,21 @@ class ProposalModelBernoulli(BaseProposalModel):
         )  # [B, latent_dim, num_samples]
         return h_samples  # [B, latent_dim, num_samples]
 
+    def encode(self, x):
+        logits = self.net(x)
+        probs = torch.sigmoid(logits)
+        h = (probs > 0.5).float()
+        return h  # [B, latent_dim]
+
     def log_conditional_prob(self, h, x):
         # h: [B, latent_dim, num_samples]
         # x: [B, input_dim]
         logits = self.net(x)  # [B, latent_dim]
         return -torch.nn.functional.binary_cross_entropy_with_logits(
             logits.unsqueeze(-1), h, reduction="none"
-        ).sum(dim=1) # [B, num_samples]
+        ).sum(
+            dim=1
+        )  # [B, num_samples]
 
     def forward(self, h, x):
         """Compute negative log conditional probability as loss
@@ -168,41 +176,19 @@ class ProposalModelCategorical(BaseProposalModel):
             h_samples_list, dim=1
         )  # [B, num_latent_vars, num_samples], each entry is index of category
 
-        return h_samples.to(torch.float)  # [B, total_num_categories, num_samples]
+        return h_samples.float()  # [B, total_num_categories, num_samples]
 
-    # def encode_latent(self, h, encoding_method="one_hot"):
-    #     """Encode the latent variable indices into one-hot or sinusoidal encoding.
+    def encode(self, x):
+        logits = self.net(x)
+        split_logits = torch.split(logits, self._num_categories, dim=-1)
 
-    #     Args:
-    #         h: Tensor of latent variable indices, shape [B, total_num_categories, num_samples].
-    #         encoding: Encoding type, either "one_hot" or "sinusoidal".
+        idx_list = []
+        for logit in split_logits:
+            idx = torch.argmax(logit, dim=-1, keepdim=True)  # [B, 1]
+            idx_list.append(idx)
 
-    #     Returns:
-    #         encoded_h: Encoded tensor, shape depends on the encoding type:
-    #             - "one_hot": [B, num_latent_vars, num_samples, num_categories].
-    #             - "sinusoidal": [B, num_latent_vars, num_samples, 2 * num_categories].
-
-    #     Note:
-    #         Here, we do not catcatenate along the latent variable dimension; each latent variable is encoded separately.
-    #         This mechanism should be implemented in `JointModel`.
-    #     """
-    #     if encoding_method == "one_hot":
-    #         encoded_h_list = []
-    #         for i in range(self.num_latent_vars):
-    #             h_i = h[:, i, :]  # [B, num_samples]
-    #             h_i_one_hot = nn.functional.one_hot(
-    #                 h_i.long(), num_classes=self._num_categories[i]
-    #             ).float()  # [B, num_samples, num_categories_i]
-    #             encoded_h_list.append(h_i_one_hot)  # [B, num_samples, num_categories_i]
-    #         encoded_h = torch.cat(encoded_h_list, dim=-1).permute(
-    #             0, 2, 1
-    #         )  # [B, total_num_categories, num_samples]
-    #     elif encoding_method == "sinusoidal":
-    #         # Implement sinusoidal encoding if needed
-    #         raise NotImplementedError("Sinusoidal encoding not implemented yet.")
-    #     else:
-    #         raise ValueError(f"Unknown encoding method: {encoding_method}")
-    #     return encoded_h  # [B, total_num_categories, num_samples]
+        h_idx = torch.cat(idx_list, dim=1)  # [B, num_latent_vars]
+        return h_idx.float()
 
     def log_conditional_prob(self, h, x):
         """Compute log q(h|x)
@@ -233,7 +219,7 @@ class ProposalModelCategorical(BaseProposalModel):
         split_logits = torch.split(
             logits, self._num_categories, dim=-1
         )  # List of [B, num_categories_i]
-        
+
         log_cond = logits.new_zeros(h.size(0), h.size(2))  # [B, num_samples]
 
         for i, logit in enumerate(split_logits):
@@ -243,7 +229,7 @@ class ProposalModelCategorical(BaseProposalModel):
             log_cond += log_prob_i.gather(
                 1, h_i.long()
             )  # [B, num_samples], gather log prob of sampled categories
-            
+
         return log_cond  # [B, num_samples]
 
     def forward(self, h, x):

@@ -21,12 +21,12 @@ model:
       activation: leakyrelu
     sampler:
       _target_: src.samplers.misampler.MISampler
-      use_cache: true # initial value, will be updated during training
+      use_cache: false # initial value, will be updated during training
       dataset_size: 60000
-    lr_joint: 3e-4
-    lr_proposal: 3e-4
-    num_mis_steps: 2
-    cache_start_epoch: 0
+    lr_joint: 3e-3
+    lr_proposal: 6e-3
+    num_mis_steps: 4
+    cache_start_epoch: 120
 
 
 data:
@@ -76,7 +76,7 @@ trainer:
         norm_type: 2
         log_every_n_steps: 1
 
-  max_epochs: 200
+  max_epochs: 300
   accelerator: gpu
   devices: [4,5,6,7]
   strategy: ddp_find_unused_parameters_true
