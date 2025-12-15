@@ -5,35 +5,35 @@ model:
   init_args:
     joint_model:
       _target_: src.models.components.joint_model.JointModelCategoricalGaussian
-      num_categories: [4096]
-      num_latent_vars: 1
-      embedding_dims: [12]
-      layers: [200, 200]
+      num_categories: [16,16]
+      num_latent_vars: 2
+      embedding_dims: [8]
+      layers: [100, 100]
       output_dim: 784
       activation: leakyrelu
       final_activation: tanh
     proposal_model:
       _target_: src.models.components.proposal_model.ProposalModelCategorical
       input_dim: 784
-      num_categories: [4096]
-      num_latent_vars: 1
+      num_categories: [16, 16]
+      num_latent_vars: 2
       layers: [200, 200]
       activation: leakyrelu
     sampler:
       _target_: src.samplers.misampler.MISampler
       use_cache: false # initial value, will be updated during training
       dataset_size: 60000
-    lr_joint: 3e-3
-    lr_proposal: 6e-3
-    num_mis_steps: 4
-    cache_start_epoch: 120
+    lr_joint: 3e-4
+    lr_proposal: 3e-4
+    num_mis_steps: 2
+    cache_start_epoch: 600
 
 
 data:
   class_path: src.data.mnist.MNISTDataModule
   init_args:
     root: ./data
-    batch_size: 500
+    batch_size: 32
     num_workers: 4
 
 trainer:
@@ -77,7 +77,7 @@ trainer:
         norm_type: 2
         log_every_n_steps: 1
 
-  max_epochs: 300
+  max_epochs: 1000
   accelerator: gpu
   devices: [4,5,6,7]
   strategy: ddp_find_unused_parameters_true

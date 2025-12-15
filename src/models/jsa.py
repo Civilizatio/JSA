@@ -48,7 +48,7 @@ class JSA(LightningModule):
         # For visualization during validation
         self.validation_step_outputs = []
 
-        self.log_codebook_utilization_valid = False
+        self.log_codebook_utilization_valid = True
         self.log_codebook_utilization_test = False
 
     def setup(self, stage=None):
@@ -126,7 +126,7 @@ class JSA(LightningModule):
         self.log("valid/nll", nll.mean(), prog_bar=True, sync_dist=True)
 
         if batch_idx == 0:
-            self.validation_step_outputs.append(x[:16])
+            self.validation_step_outputs.append(x[:25])
 
         if self.log_codebook_utilization_valid:
             # Update codebook counter
