@@ -72,6 +72,36 @@ class MLPNetwork(nn.Module):
         feature = self.net(x)
         return self.post_process(feature)
 
+class MLPEncoder(nn.Module):
+    def __init__(
+        self,
+        mlp_args,
+    ):
+        super().__init__()
+        self.flatten = nn.Flatten()
+        self.net = MLPNetwork(**mlp_args)
+       
+
+    def forward(self, x):
+        x = self.flatten(x)
+        feature = self.net(x)
+        return feature
+    
+class MLPDecoder(nn.Module):
+    def __init__(
+        self,
+        mlp_args,
+        output_shape=(1, 28, 28),
+    ):
+        super().__init__()
+        self.net = MLPNetwork(**mlp_args)
+        self.unflatten = nn.Unflatten(1, output_shape)
+       
+    def forward(self, x):
+        feature = self.net(x)
+        feature = self.unflatten(feature)
+        return feature # return to original shape
+
 
 class Normalize(nn.Module):
     def __init__(self, in_channels, norm_type="group", num_groups=32):
@@ -494,4 +524,67 @@ class Decoder(nn.Module):
         h = self.activation(h)
         h = self.conv_out(h)
         return h
+
+
+class ConvDecoder(nn.Module):
+    def __init__(
+        self,
+        input_dim,
+        decoder_args,
+        final_activation="sigmoid",
+    ):
+        super().__init__()
+        self.decoder = Decoder(**decoder_args)
+        
+        # Decoder expects z of shape (B, z_channels, H, W)
+        # self.decoder.z_shape is (1, z_channels, H, W)
+        self.reshape_shape = self.decoder.z_shape[1:] # (z_channels, H, W)
+        flat_dim = int(np.prod(self.reshape_shape))
+        
+        self.linear = nn.Linear(input_dim, flat_dim)
+        self.final_activation = final_activation
+        
+    def forward(self, x):
+        x = self.linear(x)
+        x = x.view(-1, *self.reshape_shape)
+        x = self.decoder(x)
+        x = torch.flatten(x, start_dim=1)
+        
+        if self.final_activation == "sigmoid":
+            x = torch.sigmoid(x)
+        elif self.final_activation == "tanh":
+            x = torch.tanh(x)
+            x = (x + 1) / 2
+            
+        return x
+
+
+class ConvEncoder(nn.Module):
+    def __init__(
+        self,
+        input_shape,
+        encoder_args,
+        output_dim,
+    ):
+        super().__init__()
+        self.input_shape = input_shape
+        self.encoder = Encoder(**encoder_args)
+        
+        # Calculate encoder output dim
+        with torch.no_grad():
+            dummy_input = torch.zeros(1, *input_shape)
+            dummy_out = self.encoder(dummy_input)
+            enc_out_dim = dummy_out.view(1, -1).shape[1]
+            
+        self.linear = nn.Linear(enc_out_dim, output_dim)
+        
+    def forward(self, x):
+        x = x.view(-1, *self.input_shape)
+        x = self.encoder(x)
+        x = torch.flatten(x, start_dim=1)
+        x = self.linear(x)
+        return x
+
+
+
 

@@ -10,43 +10,57 @@ model:
         num_latent_vars: 1
         embedding_dims: [12]
         net:
-          class_path: src.models.components.networks.MLPDecoder
+          class_path: src.models.components.networks.ConvDecoder
           init_args:
-            mlp_args:
-              layers: [200, 200]
-              input_dim: 12 # should be equal to sum of embedding_dims
-              output_dim: 784
-              activation: leakyrelu
-              final_activation: tanh
-            output_shape: [1, 28, 28]
+            input_dim: 12
+            final_activation: tanh
+            decoder_args:
+              ch: 32
+              out_ch: 1
+              ch_mult: [1, 2, 4]
+              num_res_blocks: 2
+              attn_resolutions: []
+              dropout: 0.0
+              resamp_with_conv: true
+              in_channels: 1
+              resolution: 28
+              z_channels: 4
     proposal_model:
       class_path: src.models.components.proposal_model.ProposalModelCategorical
       init_args:
         num_categories: [4096]
         num_latent_vars: 1
         net:
-          class_path: src.models.components.networks.MLPEncoder
+          class_path: src.models.components.networks.ConvEncoder
           init_args:
-            mlp_args:
-              layers: [200, 200]
-              input_dim: 784
-              output_dim: 4096 # should be equal to sum of num_categories
-              activation: leakyrelu
-              final_activation: null
+            input_shape: [1, 28, 28]
+            output_dim: 4096
+            encoder_args:
+              ch: 32
+              out_ch: 1
+              ch_mult: [1, 2, 4]
+              num_res_blocks: 2
+              attn_resolutions: []
+              dropout: 0.0
+              resamp_with_conv: true
+              in_channels: 1
+              resolution: 28
+              z_channels: 4
+              double_z: false
     sampler:
       _target_: src.samplers.misampler.MISampler
       use_cache: false # initial value, will be updated during training
       dataset_size: 60000
-    lr_joint: 3e-3
-    lr_proposal: 3e-3
+    lr_joint: 3e-4
+    lr_proposal: 3e-4
     num_mis_steps: 2
-    cache_start_epoch: 120
+    cache_start_epoch: 600
 
 data:
   class_path: src.data.mnist.MNISTDataModule
   init_args:
     root: ./data
-    batch_size: 500
+    batch_size: 32
     num_workers: 4
 
 trainer:
@@ -54,7 +68,7 @@ trainer:
     class_path: lightning.pytorch.loggers.tensorboard.TensorBoardLogger
     init_args:
       save_dir: ./egs/continuous_mnist
-      name: categorical_prior
+      name: categorical_prior_conv
 
   callbacks:
     # - class_path: src.utils.redirect_print_callback.RedirectPrintCallback
@@ -89,7 +103,7 @@ trainer:
         norm_type: 2
         log_every_n_steps: 1
 
-  max_epochs: 200
+  max_epochs: 1000
   accelerator: gpu
   devices: [4, 5, 6, 7]
   strategy: ddp_find_unused_parameters_true

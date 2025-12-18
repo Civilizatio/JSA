@@ -48,7 +48,7 @@ class JSA(LightningModule):
         # For visualization during validation
         self.validation_step_outputs = []
 
-        self.log_codebook_utilization_valid = True
+        self.log_codebook_utilization_valid = False
         self.log_codebook_utilization_test = False
 
     def setup(self, stage=None):

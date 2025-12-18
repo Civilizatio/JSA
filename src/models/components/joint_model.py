@@ -58,9 +58,7 @@ class JointModelBernoulliBernoulli(BaseJointModel):
         # Assume net includes Sigmoid activation and returns probabilities
         probs_x = self.net(h_reshaped)  # [B * num_samples, output_dim]
 
-        probs_x = probs_x.view(
-            B, num_samples, -1
-        )  # [B, num_samples, output_dim]
+        probs_x = probs_x.view(B, num_samples, -1)  # [B, num_samples, output_dim]
 
         return probs_x.transpose(1, 2)  # [B, output_dim, num_samples]
 
@@ -176,9 +174,7 @@ class JointModelBernoulliGaussian(BaseJointModel):
         # Assume net includes appropriate activation (e.g. Sigmoid) and returns mean in [0, 1]
         mean_x = self.net(h_reshaped)  # [B * num_samples, output_dim]
 
-        mean_x = mean_x.view(
-            B, num_samples, -1
-        )  # [B, num_samples, output_dim]
+        mean_x = mean_x.view(B, num_samples, -1)  # [B, num_samples, output_dim]
 
         return mean_x.transpose(1, 2)  # [B, output_dim, num_samples]
 
@@ -247,7 +243,6 @@ class JointModelCategoricalGaussian(BaseJointModel):
         num_categories,
         num_latent_vars,
         embedding_dims=None,
-
     ):
         super().__init__()
 
@@ -315,12 +310,12 @@ class JointModelCategoricalGaussian(BaseJointModel):
         # Likelihood p(x|h)
         # We assume independent Gaussian distribution for each pixel with fixed variance (e.g., 1.0)
         # Shape of h: [B, num_latent_vars, num_samples]
-        mean_x = self.forward(h)  # [B, output_dim, num_samples]
-        x = x.unsqueeze(-1)  # [B, output_dim, 1]
+        mean_x = self.forward(h)  # [B, ..., num_samples]
+        x = x.unsqueeze(-1)  # [B, C, H, W, 1]
 
         gaussian_dist = torch.distributions.Normal(loc=mean_x, scale=self.SIGMA)
         log_p_x_given_h = gaussian_dist.log_prob(x).sum(
-            dim=1
+            dim=list(range(1, x.dim() - 1))
         )  # sum over dimensions, shape [B, num_samples]
 
         return log_p_h + log_p_x_given_h  # log p(x, h)
@@ -344,13 +339,11 @@ class JointModelCategoricalGaussian(BaseJointModel):
             ]
             h = torch.cat(h_indices, dim=-1)  # shape [1, num_latent_vars]
 
-        mean_x = self.forward(h).squeeze(-1)  # [B, output_dim]
+        mean_x = self.forward(h).squeeze(-1)  # [B, ..., num_samples]
         gaussian_dist = torch.distributions.Normal(loc=mean_x, scale=self.SIGMA)
-        x_samples = gaussian_dist.sample((num_samples,))  # [num_samples, B, output_dim]
-        x_samples = torch.clamp(x_samples, 0.0, 1.0).permute(
-            1, 2, 0
-        )  # [B, output_dim, num_samples]
-        return x_samples  # [B, output_dim, num_samples]
+        x_samples = gaussian_dist.sample((num_samples,))  # [num_samples, B, ...]
+        x_samples = torch.clamp(x_samples, 0.0, 1.0).permute(1, *range(2, x_samples.dim()), 0)  # [B, ..., num_samples]
+        return x_samples  # [B, ..., num_samples]
 
     def decode(self, h):
         """Decode x ~ p(x|h)
@@ -380,7 +373,10 @@ class JointModelCategoricalGaussian(BaseJointModel):
         x = x.unsqueeze(-1)  # [B, output_dim, 1]
         # Using MSE loss as negative log likelihood
         mse_loss = nn.MSELoss(reduction="none")
-        log_p_x_given_h = -mse_loss(mean_x, x).sum(dim=1)  # shape [B, num_samples]
+        log_p_x_given_h = -mse_loss(mean_x, x)
+        
+        sum_dims = list(range(1, x.dim() - 1))
+        log_p_x_given_h = log_p_x_given_h.sum(dim=sum_dims)  # shape [B, num_samples]
         log_joint = log_p_x_given_h.mean(dim=1)  # average over samples, shape [B]
         return -log_joint.mean()  # negative log joint probability
 
@@ -410,9 +406,7 @@ class JointModelCategoricalGaussian(BaseJointModel):
             -1, self.latent_dim
         )  # [B * num_samples, latent_dim]
 
-        mean_x = self.net(h_reshaped)  # [B * num_samples, output_dim]
-        mean_x = mean_x.view(
-            B, num_samples, -1
-        )  # [B, num_samples, output_dim]
+        mean_x = self.net(h_reshaped)  # [B * num_samples, ...]
+        mean_x = mean_x.view(B, num_samples, *mean_x.shape[1:])  # [B, num_samples, ...]
 
-        return mean_x.transpose(1, 2)  # [B, output_dim, num_samples]
+        return mean_x.permute(0, *range(2, mean_x.dim()), 1)  # [B, ..., num_samples]

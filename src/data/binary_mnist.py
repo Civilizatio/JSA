@@ -1,30 +1,26 @@
-# src/data/mnist.py
+# src/data/binary_mnist.py
 from lightning.pytorch import LightningDataModule
 from torch.utils.data import DataLoader, random_split
 from torchvision import datasets, transforms
 from src.base.base_dataset import JsaDataset
 
-import numpy as np
-
-
-class MNISTDataset(JsaDataset):
+class BinaryMNISTDataset(JsaDataset):
     def __init__(self, root: str, train=True):
         self.ds = datasets.MNIST(
-            root=root, train=train, download=True, transform=transforms.ToTensor()
+            root=root,
+            train=train,
+            download=True,
+            transform=transforms.Compose([transforms.ToTensor(), lambda x: (x > 0.5).float()]),
         )
 
     def __len__(self):
         return len(self.ds)
 
     def __getitem__(self, index):
-        # x: [1, 28, 28], label: int
-        # index: int
         x, label = self.ds[index]
         return x, label, index
-
-
-
-class MNISTDataModule(LightningDataModule):
+    
+class BinaryMNISTDataModule(LightningDataModule):
     def __init__(self, root="./data", batch_size=64, num_workers=4):
         super().__init__()
         self.root = root
@@ -33,10 +29,10 @@ class MNISTDataModule(LightningDataModule):
 
     def setup(self, stage=None):
         if stage == "fit" or stage is None:
-            full = MNISTDataset(self.root, train=True)
+            full = BinaryMNISTDataset(self.root, train=True)
             self.train_set, self.val_set = random_split(full, [50000, 10000])
         if stage == "test" or stage is None:
-            self.test_set = MNISTDataset(self.root, train=False)
+            self.test_set = BinaryMNISTDataset(self.root, train=False)
 
     def train_dataloader(self):
         return DataLoader(
@@ -58,15 +54,10 @@ class MNISTDataModule(LightningDataModule):
 
 
 if __name__ == "__main__":
-    data_module = MNISTDataModule()
+    data_module = BinaryMNISTDataModule()
     data_module.setup()
     train_loader = data_module.train_dataloader()
     for batch in train_loader:
         x, y, idx = batch
         print(x.shape, y.shape, idx.shape)
         break
-
-    dataset = MNISTDataset(root="./data", train=True)
-    print(f"Dataset length: {len(dataset)}")
-    x, label, index = dataset[0]
-    print(f"Sample shape: {x.shape}, Label: {label}, Index: {index}")

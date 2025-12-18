@@ -28,7 +28,7 @@ pip install -r requirements.txt
 
 ```bash
 PYTHONPATH=. python scripts/run_mnist.py fit \
-    --config ./configs/categorical_prior_continuous_mnist.yaml
+    --config ./configs/categorical_prior_continuous_mnist_conv.yaml
 ```
 
 从 `checkpoints` 恢复训练指令：
@@ -55,7 +55,11 @@ PYTHONPATH=. python scripts/run_mnist.py test \
 查看 TensorBoard 日志：
 
 ``` bash
-tensorboard --logdir=egs/continuous_mnist/categorical_prior/version_10 --port=6006
+tensorboard --logdir=egs/continuous_mnist/categorical_prior/version_11 --port=6006
+```
+
+``` bash
+tensorboard --logdir=egs/continuous_mnist/categorical_prior_conv/version_1 --port=6006
 ```
 
 ## Future development
