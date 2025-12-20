@@ -33,7 +33,10 @@ def decode_images(indices, model, num_categories):
             # Convert 1D index to multi-dimensional category indices
             multi_dim_index = decode_index_to_multidim(
                 index, num_categories
-            ).unsqueeze(0).to(model.device)  # [1, num_latent_vars]
+            ).to(model.device)  # [num_latent_vars]
+            
+            # Expand to [B, H, W, num_latent_vars] for batch size 1, height 1, width 1
+            multi_dim_index = multi_dim_index.unsqueeze(0).unsqueeze(0).unsqueeze(0)  # [1,1,1,num_latent_vars]
 
             # Decode image
             decoded = model.joint_model.decode(multi_dim_index)
@@ -66,9 +69,11 @@ def main(exp_dir, config_path, checkpoint_path):
     logger.info(f"Loading model from {checkpoint_path}...")
 
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
-    model = JSA.load_model(
-        config_path=config_path, checkpoint_path=checkpoint_path, device=device
+    model = JSA.load_from_checkpoint(
+       checkpoint_path=checkpoint_path
     )
+    model=model.to(device)
+    model.eval()
 
     # Prepare test data
     test_dataset = MNISTDataset(root="./data", train=False)
@@ -88,7 +93,8 @@ def main(exp_dir, config_path, checkpoint_path):
         for batch in test_loader:
             x, _, idx = batch
             x = x.to(device)
-            h = model.proposal_model.encode(x)  # [B, num_latent_vars]
+            h = model.proposal_model.encode(x)  # [B, H, W, num_latent_vars]
+            h = h.view(-1, num_latent_vars) # [B*H*W, num_latent_vars]
             # print("Sampled latent variables h shape:", h.shape)
 
             h = h.cpu().numpy()  # [B, num_latent_vars]
@@ -154,7 +160,7 @@ def main(exp_dir, config_path, checkpoint_path):
 
 if __name__ == "__main__":
 
-    exp_dir = "egs/continuous_mnist/categorical_prior/version_4"
+    exp_dir = "egs/continuous_mnist/categorical_prior_conv/version_0"
     config_path = f"{exp_dir}/config.yaml"
     checkpoint_path = f"{exp_dir}/checkpoints/best-checkpoint.ckpt"
     main(exp_dir, config_path, checkpoint_path)

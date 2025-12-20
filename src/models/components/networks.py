@@ -72,6 +72,7 @@ class MLPNetwork(nn.Module):
         feature = self.net(x)
         return self.post_process(feature)
 
+
 class MLPEncoder(nn.Module):
     def __init__(
         self,
@@ -80,13 +81,13 @@ class MLPEncoder(nn.Module):
         super().__init__()
         self.flatten = nn.Flatten()
         self.net = MLPNetwork(**mlp_args)
-       
 
     def forward(self, x):
         x = self.flatten(x)
         feature = self.net(x)
         return feature
-    
+
+
 class MLPDecoder(nn.Module):
     def __init__(
         self,
@@ -96,11 +97,11 @@ class MLPDecoder(nn.Module):
         super().__init__()
         self.net = MLPNetwork(**mlp_args)
         self.unflatten = nn.Unflatten(1, output_shape)
-       
+
     def forward(self, x):
         feature = self.net(x)
         feature = self.unflatten(feature)
-        return feature # return to original shape
+        return feature  # return to original shape
 
 
 class Normalize(nn.Module):
@@ -126,7 +127,6 @@ class Normalize(nn.Module):
         return self.norm(x)
 
 
-
 class Upsample(nn.Module):
     def __init__(self, in_channels, with_conv):
         super().__init__()
@@ -144,6 +144,11 @@ class Upsample(nn.Module):
 
 
 class Downsample(nn.Module):
+    """Downsample module with optional convolution.
+
+    Only supports downsampling by a factor of 2.
+    """
+
     def __init__(self, in_channels, with_conv):
         super().__init__()
         self.with_conv = with_conv
@@ -259,7 +264,7 @@ class AttnBlock(nn.Module):
         # compute attention
         b, c, h, w = q.shape
         q = q.reshape(b, c, h * w)
-        q = q.permute(0, 2, 1)  # b,hw,c
+        q = q.permute(0, 2, 1).contiguous()  # b,hw,c
         k = k.reshape(b, c, h * w)  # b,c,hw
         w_ = torch.bmm(q, k)  # b,hw,hw    w[b,i,j]=sum_c q[b,i,c]k[b,c,j]
         w_ = w_ * (int(c) ** (-0.5))
@@ -267,7 +272,7 @@ class AttnBlock(nn.Module):
 
         # attend to values
         v = v.reshape(b, c, h * w)
-        w_ = w_.permute(0, 2, 1)  # b,hw,hw (first hw of k, second of q)
+        w_ = w_.permute(0, 2, 1).contiguous()  # b,hw,hw (first hw of k, second of q)
         h_ = torch.bmm(v, w_)  # b, c,hw (hw of q) h_[b,c,j] = sum_i v[b,c,i] w_[b,i,j]
         h_ = h_.reshape(b, c, h, w)
 
@@ -292,8 +297,8 @@ class Encoder(nn.Module):
         in_channels,
         resolution,
         z_channels,
-        double_z=True,
-        **ignore_kwargs
+        double_z=False,
+        **ignore_kwargs,
     ):
         super().__init__()
         self.ch = ch
@@ -358,12 +363,17 @@ class Encoder(nn.Module):
 
         # end
         self.norm_out = Normalize(block_in, norm_type=norm_type)
+
+        # For output logits, we use pointwise convolution,
+        # namely, kernel_size=1
         self.conv_out = torch.nn.Conv2d(
             block_in,
-            2 * z_channels if double_z else z_channels,
-            kernel_size=3,
+            # 2 * z_channels if double_z else z_channels,
+            z_channels,
+            # For VAE, may use double_z for mean and logvar,
+            # here we just output z_channels
+            kernel_size=1,
             stride=1,
-            padding=1,
         )
 
     def forward(self, x):
@@ -413,7 +423,7 @@ class Decoder(nn.Module):
         resolution,
         z_channels,
         give_pre_end=False,
-        **ignorekwargs
+        **ignorekwargs,
     ):
         super().__init__()
         self.ch = ch
@@ -430,16 +440,15 @@ class Decoder(nn.Module):
         block_in = ch * ch_mult[self.num_resolutions - 1]
         curr_res = resolution // 2 ** (self.num_resolutions - 1)
         self.z_shape = (1, z_channels, curr_res, curr_res)
-        print(
-            "Working with z of shape {} = {} dimensions.".format(
-                self.z_shape, np.prod(self.z_shape)
-            )
-        )
+        # print(
+        #     "Working with z of shape {} = {} dimensions.".format(
+        #         self.z_shape, np.prod(self.z_shape)
+        #     )
+        # )
 
         # z to block_in
-        self.conv_in = torch.nn.Conv2d(
-            z_channels, block_in, kernel_size=3, stride=1, padding=1
-        )
+        # To symmetrically match the Encoder, we use kernel_size=1 here
+        self.conv_in = torch.nn.Conv2d(z_channels, block_in, kernel_size=1, stride=1)
 
         # middle
         self.mid = nn.Module()
@@ -529,62 +538,84 @@ class Decoder(nn.Module):
 class ConvDecoder(nn.Module):
     def __init__(
         self,
-        input_dim,
-        decoder_args,
+        ch,
+        out_ch,
+        ch_mult,
+        num_res_blocks,
+        attn_resolutions,
+        dropout,
+        resamp_with_conv,
+        in_channels,
+        resolution,
+        z_channels,
         final_activation="sigmoid",
+        **ignore_kwargs,
     ):
         super().__init__()
-        self.decoder = Decoder(**decoder_args)
-        
-        # Decoder expects z of shape (B, z_channels, H, W)
-        # self.decoder.z_shape is (1, z_channels, H, W)
-        self.reshape_shape = self.decoder.z_shape[1:] # (z_channels, H, W)
-        flat_dim = int(np.prod(self.reshape_shape))
-        
-        self.linear = nn.Linear(input_dim, flat_dim)
+        self.decoder = Decoder(
+            ch=ch,
+            out_ch=out_ch,
+            ch_mult=ch_mult,
+            num_res_blocks=num_res_blocks,
+            attn_resolutions=attn_resolutions,
+            dropout=dropout,
+            resamp_with_conv=resamp_with_conv,
+            in_channels=in_channels,
+            resolution=resolution,
+            z_channels=z_channels,
+        )
+
         self.final_activation = final_activation
-        
+
     def forward(self, x):
-        x = self.linear(x)
-        x = x.view(-1, *self.reshape_shape)
-        x = self.decoder(x)
-        x = torch.flatten(x, start_dim=1)
-        
+        # x: [B, H, W, z_channels]
+        x = x.permute(0, 3, 1, 2).contiguous()  # [B, H, W, z_channels] -> [B, z_channels, H, W]
+        x = self.decoder(x) # [B, out_ch, H, W]
+
+        # Rescale output to [0, 1] range if needed
         if self.final_activation == "sigmoid":
             x = torch.sigmoid(x)
         elif self.final_activation == "tanh":
             x = torch.tanh(x)
             x = (x + 1) / 2
-            
+
         return x
 
 
 class ConvEncoder(nn.Module):
     def __init__(
         self,
-        input_shape,
-        encoder_args,
-        output_dim,
+        ch,
+        out_ch,
+        ch_mult=(1, 2, 4, 8),
+        num_res_blocks=2,
+        attn_resolutions=[],
+        activation="relu",
+        norm_type="group",
+        dropout=0.0,
+        resamp_with_conv=True,
+        in_channels=1,
+        resolution=28,
+        z_channels=4,
+        **ignore_kwargs,
     ):
         super().__init__()
-        self.input_shape = input_shape
-        self.encoder = Encoder(**encoder_args)
-        
-        # Calculate encoder output dim
-        with torch.no_grad():
-            dummy_input = torch.zeros(1, *input_shape)
-            dummy_out = self.encoder(dummy_input)
-            enc_out_dim = dummy_out.view(1, -1).shape[1]
-            
-        self.linear = nn.Linear(enc_out_dim, output_dim)
-        
+        self.encoder = Encoder(
+            ch=ch,
+            out_ch=out_ch,
+            ch_mult=ch_mult,
+            num_res_blocks=num_res_blocks,
+            attn_resolutions=attn_resolutions,
+            activation=activation,
+            norm_type=norm_type,
+            dropout=dropout,
+            resamp_with_conv=resamp_with_conv,
+            in_channels=in_channels,
+            resolution=resolution,
+            z_channels=z_channels,
+        )
+
     def forward(self, x):
-        x = x.view(-1, *self.input_shape)
-        x = self.encoder(x)
-        x = torch.flatten(x, start_dim=1)
-        x = self.linear(x)
+        x = self.encoder(x)  # [B, z_channels, H, W]
+        x = x.permute(0, 2, 3, 1).contiguous()  # [B, H, W, z_channels]
         return x
-
-
-
-

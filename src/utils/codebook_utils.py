@@ -116,7 +116,11 @@ def save_images_grid(
     Save images arranged in grid pages and return a dictionary of figures.
 
     Args:
-        images: list or array of images, each shape [H * W] or [H, W].
+        images: list or array of images.
+                Supported shapes:
+                    - [H * W] (Flattened Grayscale)
+                    - [H, W] (Grayscale)
+                    - [C, H, W] (Color/Grayscale)
         save_path: path prefix (without extension). Will save _page_{i}.png if save_to_disk is True.
         tag_prefix: Prefix for figure tags in the returned dictionary.
         images_per_page: Number of images per page.
@@ -134,7 +138,6 @@ def save_images_grid(
     rows, cols = grid_size
     per_page = images_per_page
     num_pages = math.ceil(num_images / per_page)
-    H = int(np.sqrt(images[0].size)) if images[0].ndim == 1 else images[0].shape[0]
 
     figures = {}  # Dictionary to store figures for external use
 
@@ -145,10 +148,30 @@ def save_images_grid(
         for i in range(start, end):
             idx = i - start
             plt.subplot(rows, cols, idx + 1)
+
             img = images[i]
+            if isinstance(img, torch.Tensor):
+                img = img.detach().cpu().numpy()
+
+            # Handle different shapes
+            # Case 1: [H*W] -> reshape to [H, W]
             if img.ndim == 1:
-                img = img.reshape(int(math.sqrt(img.size)), -1)
-            plt.imshow(img, cmap="gray")
+                side = int(math.sqrt(img.size))
+                img = img.reshape(side, side)
+
+            # Case 2: [C, H, W] -> Transpose to [H, W, C] for matplotlib
+            elif img.ndim == 3:
+                img = np.transpose(img, (1, 2, 0))  # [H, W, C]
+
+                if img.shape[2] == 1:
+                    img = img.squeeze(2)  # [H, W]
+
+            # Case 3: [H, W] -> Keep as is
+            if img.ndim == 2:
+                plt.imshow(img, cmap="gray")
+            else:
+                plt.imshow(img)
+
             plt.axis("off")
         plt.tight_layout()
         if title:

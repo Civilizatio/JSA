@@ -31,6 +31,8 @@ class JSA(LightningModule):
         cache_start_epoch=0,
     ):
         super().__init__()
+        self.save_hyperparameters()
+        
         self.joint_model: BaseJointModel = joint_model
         self.proposal_model: BaseProposalModel = proposal_model
         self.sampler: MISampler = instantiate(
@@ -58,12 +60,12 @@ class JSA(LightningModule):
     def forward(self, x, idx=None):
 
         if idx is not None:
-            h = self.sampler.sample(x, idx=idx, num_steps=self.num_mis_steps)
+            h = self.sampler.sample(x, idx=idx, num_steps=self.num_mis_steps) # [B, 1, ..., num_latent_vars]
         else:  # use proposal model directly
             h = self.proposal_model.sample_latent(
                 x, num_samples=1
-            )  # [B, latent_dim, 1]
-            h = h.squeeze(-1)  # [B, latent_dim]
+            )  # [B, 1, ..., num_latent_vars]
+        h = h.squeeze(1)  # [B, ..., num_latent_vars]
         x_hat = self.joint_model.sample(h=h)
         return x_hat
 
@@ -86,14 +88,14 @@ class JSA(LightningModule):
         x, _, idx = batch  # x: [B, D], idx: [B,]
 
         # MISampling step
-        h = self.sampler.sample(x, idx=idx, num_steps=self.num_mis_steps)
+        h = self.sampler.sample(x, idx=idx, num_steps=self.num_mis_steps) # [B, 1, ..., num_latent_vars]
 
         # Optimizers
         opt_joint, opt_proposal = self.optimizers()
 
         # Update joint model
         opt_joint.zero_grad()
-        loss_joint = self.joint_model.get_loss(x, h)
+        loss_joint = self.joint_model.get_loss(x, h.squeeze(1))
         self.manual_backward(loss_joint)
         opt_joint.step()
 
@@ -115,7 +117,7 @@ class JSA(LightningModule):
             self.num_categories = self.proposal_model._num_categories
             self.codebook_size = math.prod(self.num_categories)
             self.codebook_counter = torch.zeros(
-                self.codebook_size, dtype=torch.long, device=self.device
+                self.codebook_size, dtype=torch.long, device=self.device 
             )
 
     def validation_step(self, batch, batch_idx):
@@ -194,8 +196,10 @@ class JSA(LightningModule):
     def get_nll(self, x, idx):
 
         # MISampling step
-        h = self.sampler.sample(x, idx=idx, num_steps=self.num_mis_steps)
+        h = self.sampler.sample(x, idx=idx, num_steps=self.num_mis_steps) # [B, 1, ..., num_latent_vars]
+        h = h.squeeze(1)  # [B, ..., num_latent_vars]
 
+        
         # log p(x) ~ log p(x,h) - log q(h|x)
         log_nll = self.joint_model.log_joint_prob(
             x, h
@@ -301,13 +305,16 @@ class JSA(LightningModule):
                 # but ensure everyone has the same in distributed environment
                 self.sampler.sync_cache()
 
-    @classmethod
-    def load_model(cls, config_path: str, checkpoint_path: str, device: str = "cpu"):
-        """Load model from config and checkpoint paths"""
-        from omegaconf import OmegaConf
+    # @classmethod
+    # def load_model(cls, config_path: str, checkpoint_path: str, device: str = "cpu"):
+    #     """Load model from config and checkpoint paths"""
+    #     from omegaconf import OmegaConf
 
-        config = OmegaConf.load(config_path)
-        model = cls.load_from_checkpoint(checkpoint_path, **config.model.init_args)
-        model.to(device)
-        model.sampler.to(device)
-        return model.eval()
+    #     config = OmegaConf.load(config_path)
+    #     model = instantiate(config.model)
+    #     ckpt = torch.load(checkpoint_path, map_location=device)
+    #     model.load_state_dict(ckpt["state_dict"])
+    #     # model = cls.load_from_checkpoint(checkpoint_path, **config.model.init_args)
+    #     model.to(device)
+    #     model.sampler.to(device)
+    #     return model.eval()

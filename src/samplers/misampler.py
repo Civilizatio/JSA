@@ -33,12 +33,14 @@ class MISampler(BaseSampler):
         proposal_model,  # q(h|x)
         use_cache=False,  # whether to use cache mechanism
         dataset_size=None,  # required if use_cache is True
+        element_shape=None,  # for picture, is (H, W)
     ):
         super().__init__()
         self.joint_model = joint_model
         self.proposal_model = proposal_model
         self.dataset_size = dataset_size
         self.use_cache = use_cache  # use the setter, which initializes cache if needed
+        self.element_shape = element_shape
 
     @property
     def use_cache(self):
@@ -49,16 +51,25 @@ class MISampler(BaseSampler):
         self._use_cache = value
         if value and not hasattr(self, "cache"):
             # initialize cache if not present
-            self._init_cache(self.dataset_size, self.proposal_model.num_latent_vars)
+            self._init_cache(
+                self.dataset_size,
+                self.proposal_model.num_latent_vars,
+                self.element_shape,
+            )
 
     @torch.no_grad()
-    def _init_cache(self, dataset_size, num_latent_vars):
+    def _init_cache(self, dataset_size, num_latent_vars, element_shape):
         """Initialize cache by sampling from proposal model
 
         You may modify this method to change the initialization strategy.
         """
+        cache_shape = (
+            (dataset_size, *element_shape, num_latent_vars)
+            if element_shape is not None
+            else (dataset_size, num_latent_vars)
+        )  # shape of the cache, for picture data, is (N, H, W, num_latent_vars)
         self.cache = torch.full(
-            (dataset_size, num_latent_vars),
+            cache_shape,
             int(-1),
             dtype=torch.long,
             device=next(self.proposal_model.parameters()).device,
@@ -79,15 +90,28 @@ class MISampler(BaseSampler):
 
     @torch.no_grad()
     def _init_h_old(self, idx, h_new):
-        h_new = h_new.squeeze(-1).long()  # [batch_size, num_latent_vars]
+        # h_new: [B, num_samples, ..., num_latent_vars]
         if self.use_cache and idx is not None:
-            h_old = self.cache[idx]  # [batch_size, num_latent_vars], dtype=torch.long
-            uninitialized_mask = h_old == -1
+            h_old = self.cache[
+                idx
+            ]  # [batch_size, H, W, num_latent_vars], dtype=torch.long
+            h_old = (
+                h_old.unsqueeze(1).expand_as(h_new).float()
+            )  # [batch_size, num_samples, H, W, num_latent_vars]
+            uninitialized_mask = (h_old[:, 0:1, ...] == -1).all(
+                dim=tuple(range(2, h_old.dim()))
+            )  # [batch_size, 1], check if all latent vars are -1
             if uninitialized_mask.any():
-                h_old[uninitialized_mask] = h_new[uninitialized_mask].clone()
+                mask_indices = torch.nonzero(
+                    uninitialized_mask.squeeze(1), as_tuple=True
+                )[
+                    0
+                ]  # get indices of uninitialized samples
+                if len(mask_indices) > 0:
+                    h_old[mask_indices] = h_new[mask_indices].clone()
         else:
             h_old = h_new.clone()
-        return h_old.unsqueeze(-1).float()  # [batch_size, num_latent_vars, 1]
+        return h_old  # [B, num_samples, ..., num_latent_vars]
 
     @torch.no_grad()
     def _cal_acceptance_prob(self, x, h_new, h_old):
@@ -95,11 +119,18 @@ class MISampler(BaseSampler):
 
         a = p(x,h') * q(h|x) / (p(x,h) * q(h'|x))
         """
-        log_p_new = self.joint_model.log_joint_prob(x, h_new)
-        log_p_old = self.joint_model.log_joint_prob(x, h_old)
+        
+        # x: [B, ...]
+        # h_new, h_old: [B, num_samples, ..., num_latent_vars]
+        batch_size, num_samples = h_new.shape[0], h_new.shape[1]
+        h_new_flat = h_new.reshape(batch_size * num_samples, *h_new.shape[2:])  # [B * num_samples, ...]
+        h_old_flat = h_old.reshape(batch_size * num_samples, *h_old.shape[2:])  # [B * num_samples, ...]
 
-        log_q_new = self.proposal_model.log_conditional_prob(h_new, x)
-        log_q_old = self.proposal_model.log_conditional_prob(h_old, x)
+        log_p_new = self.joint_model.log_joint_prob(x, h_new_flat).reshape(batch_size, num_samples) # [B,num_samples]
+        log_p_old = self.joint_model.log_joint_prob(x, h_old_flat).reshape(batch_size, num_samples) # [B,num_samples]
+
+        log_q_new = self.proposal_model.log_conditional_prob(h_new, x) # [B, num_samples]
+        log_q_old = self.proposal_model.log_conditional_prob(h_old, x) # [B, num_samples]
 
         # Check for NaN or Inf
         if (
@@ -121,9 +152,9 @@ class MISampler(BaseSampler):
                 "Infinity encountered in log probabilities during acceptance probability calculation."
             )
 
-        log_accept = (log_p_new + log_q_old) - (log_p_old + log_q_new)
-        accept_prob = torch.exp(torch.clamp(log_accept, max=0.0, min=-100.0))
-        return accept_prob
+        log_accept = (log_p_new + log_q_old) - (log_p_old + log_q_new) # [B, num_samples]
+        accept_prob = torch.exp(torch.clamp(log_accept, max=0.0, min=-100.0)) # [B, num_samples]
+        return accept_prob # [B, num_samples]
 
     @torch.no_grad()
     def _cal_acceptance_prob_faster(self, x, h_new, h_old):
@@ -141,6 +172,7 @@ class MISampler(BaseSampler):
         so, log q(h|x) - log q(h'|x) = logit_h - logit_h'
 
         """
+        raise NotImplementedError("This faster acceptance probability calculation is not implemented yet.")
         assert (
             self.joint_model.__class__.__name__ == "JointModelCategoricalGaussian"
             and self.proposal_model.__class__.__name__ == "ProposalModelCategorical"
@@ -184,7 +216,7 @@ class MISampler(BaseSampler):
         """
 
         # x: [batch_size, ...]
-        # h_old: [batch_size, num_latent_vars, 1] or None
+        # h_old: [B, num_samples, ..., num_latent_vars] or None
         # idx: [batch_size, ]
 
         # Get h_old from cache if using cache
@@ -193,32 +225,39 @@ class MISampler(BaseSampler):
             h_old = self._init_h_old(idx, self.proposal_model.sample_latent(x))
 
         # Propose from q_phi(h|x)
-        h_new = self.proposal_model.sample_latent(x)  # [batch_size, num_latent_vars, 1]
+        h_new = self.proposal_model.sample_latent(x)  # [batch_size, num_samples, ..., num_latent_vars]
 
         # Compute acceptance probability
-        # accept_prob = self._cal_acceptance_prob(x, h_new, h_old)  # [batch_size, 1]
-        accept_prob = self._cal_acceptance_prob_faster(
-            x, h_new, h_old
-        )  # [batch_size, 1]
+        accept_prob = self._cal_acceptance_prob(x, h_new, h_old)  # [batch_size, num_samples]
+        # accept_prob = self._cal_acceptance_prob_faster(
+        #     x, h_new, h_old
+        # )  # [batch_size, num_samples]
 
         u = torch.rand_like(accept_prob)
-        accept = (u < accept_prob).float().unsqueeze(-1)  # [batch_size, 1, 1]
+        accept = (u < accept_prob).float()  # [batch_size, num_samples]
 
+        target_shape = accept.shape + (1,) * (h_new.dim() - accept.dim())
+        accept = accept.view(target_shape)  # reshape for broadcasting, [batch_size, num_samples, 1, ..., 1]
         # Update sample
         h_next = (
             accept * h_new + (1 - accept) * h_old
-        )  # [batch_size, num_latent_vars, 1]
+        )  # [batch_size, num_samples, ..., num_latent_vars]
         h_next = h_next.round()  # Avoid numerical issues
 
         # update cache
         if self.use_cache and idx is not None:
-            self.cache[idx] = h_next.detach().squeeze(-1).long()
+            # Randomly pick one sample to update the cache
+            rand_indices = torch.randint(0, h_next.shape[1], (h_next.shape[0],))
+            h_next_selected = h_next[
+                torch.arange(h_next.shape[0]), rand_indices
+            ]  # [batch_size, ..., num_latent_vars]
+            self.cache[idx] = h_next_selected.detach().long()
             self.updated_mask[idx] = True  # mark as updated
 
         return h_next
 
     @torch.no_grad()
-    def sample(self, x, idx=None, num_steps=1, parallel=True):
+    def sample(self, x, idx=None, num_steps=1, parallel=False):
         """Generate samples using MIS sampler.
 
 
@@ -258,10 +297,14 @@ class MISampler(BaseSampler):
         #         "Multi-step sampling (num_steps > 1) is not meaningful when use_cache=False."
         #     )
 
+        raise NotImplementedError("This parallel multi-step sampling is not implemented yet.")
         # Initialize h_old from cache or proposal model
         h_old = self._init_h_old(
-            idx, self.proposal_model.sample_latent(x)
-        )  # [batch_size, num_latent_vars, 1]
+            idx,
+            self.proposal_model.sample_latent(
+                x
+            ),  # [B, num_samples, ..., num_latent_vars]
+        )
 
         # Generate all proposal samples in parallel
         h_new = self.proposal_model.sample_latent(
