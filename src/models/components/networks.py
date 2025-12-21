@@ -566,6 +566,9 @@ class ConvDecoder(nn.Module):
         )
 
         self.final_activation = final_activation
+        
+    def get_last_layer_weight(self):
+        return self.decoder.conv_out.weight
 
     def forward(self, x):
         # x: [B, H, W, z_channels]
@@ -614,6 +617,9 @@ class ConvEncoder(nn.Module):
             resolution=resolution,
             z_channels=z_channels,
         )
+        
+    def get_last_layer_weight(self):
+        return self.encoder.conv_out.weight
 
     def forward(self, x):
         x = self.encoder(x)  # [B, z_channels, H, W]

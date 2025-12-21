@@ -37,7 +37,7 @@ model:
 data:
   class_path: src.data.mnist.MNISTDataModule
   init_args:
-    root: ./data
+    root: ./data/mnist
     batch_size: 50
     num_workers: 4
 

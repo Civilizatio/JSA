@@ -49,7 +49,7 @@
 │   │   └── ...                    
 │   └── utils/                     # 工具函数
 ├── scripts/                       # 运行脚本
-│   ├── run_mnist.py     # 运行 Bernoulli MNIST 实验脚本
+│   ├── train.py     # 运行 Bernoulli MNIST 实验脚本
 │   ├── run_categorical_MNIST.py   # 运行 Categorical MNIST 实验脚本
 │   └── ...                        
 ├── docs/                          # 文档文件夹

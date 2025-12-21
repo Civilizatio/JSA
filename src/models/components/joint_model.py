@@ -282,6 +282,9 @@ class JointModelCategoricalGaussian(BaseJointModel):
     @property
     def latent_dim(self):
         return self._latent_dim
+    
+    def get_last_layer_weight(self):
+        return self.net.get_last_layer_weight()
 
     def log_prior_prob(self, h):
         """
@@ -366,7 +369,7 @@ class JointModelCategoricalGaussian(BaseJointModel):
         mean_x = self.forward(h)  # [B, ...]
         return mean_x  # [B, output_dim]
 
-    def get_loss(self, x, h):
+    def get_loss(self, x, h, return_forward=False):
         """Compute negative log joint probability as loss
 
         Args:
@@ -375,9 +378,11 @@ class JointModelCategoricalGaussian(BaseJointModel):
                 if there are multiple samples, whose shape is [B, num_samples, ..., num_latent_vars], you
                 should flatten the first two dimensions before passing in.
                 So, N = B * num_samples in that case.
+            return_forward: whether to return the forward output (mean_x)
 
         Returns:
             loss: negative log joint probability
+            mean_x: decoded observed data, shape [N, ...] (only if return_forward is True)
         """
 
         mean_x = self.forward(h)  # [N, ...]
@@ -388,7 +393,10 @@ class JointModelCategoricalGaussian(BaseJointModel):
         mse_loss = nn.MSELoss(reduction="mean")
         log_p_x_given_h = -mse_loss(mean_x, x) # scalar
         log_joint = log_p_x_given_h
-        return -log_joint.mean()  # negative log joint probability
+        if return_forward:
+            return -log_joint.mean(), mean_x  # negative log joint probability and forward output
+        else:
+            return -log_joint.mean()  # negative log joint probability
 
     def forward(self, h):
         """Decode x ~ p(x|h)

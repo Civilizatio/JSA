@@ -21,8 +21,6 @@ class GradientNormCallback(Callback):
         if step % self.log_every_n_steps != 0:
             return
 
-        opt_joint, opt_proposal = pl_module.optimizers()
-
         # Compute gradient norm for joint model
         joint_norm = self._compute_grad_norm(pl_module.joint_model, self.norm_type)
         if joint_norm is not None:

@@ -23,18 +23,18 @@ pip install -r requirements.txt
 
 > 需要的环境变量可以定义在 `.env` 文件中，例如可以定义 `PYTHONPATH=.`。则运行下面指令时可以不需要前面加 `PYTHONPATH=.`。
 
-训练入口在 `scripts/run_mnist.py`。
+训练入口在 `scripts/train.py`。
 训练指令：
 
 ```bash
-PYTHONPATH=. python scripts/run_mnist.py fit \
-    --config ./configs/categorical_prior_continuous_mnist_conv.yaml
+PYTHONPATH=. python scripts/train.py fit \
+    --config ./configs/categorical_prior_continuous_cifar10_conv.yaml
 ```
 
 从 `checkpoints` 恢复训练指令：
 
 ```bash
-PYTHONPATH=. python scripts/run_mnist.py fit \
+PYTHONPATH=. python scripts/train.py fit \
     --config ./configs/bernoulli_prior_binary_mnist.yaml \
     --ckpt_path ./egs/bernoulli_mnist/binary_mnist/version_4/checkpoints/best-checkpoint.ckpt 
             
@@ -44,7 +44,7 @@ PYTHONPATH=. python scripts/run_mnist.py fit \
 Test:
 
 ```bash
-PYTHONPATH=. python scripts/run_mnist.py test \
+PYTHONPATH=. python scripts/train.py test \
     --config ./configs/categorical_prior_continuous_mnist.yaml \
     --ckpt_path ./egs/continuous_mnist/categorical_prior/version_3/checkpoints/best-checkpoint.ckpt \
     --trainer.devices=[0] \
@@ -60,6 +60,7 @@ tensorboard --logdir=egs/continuous_mnist/categorical_prior/version_11 --port=60
 
 ``` bash
 tensorboard --logdir=egs/continuous_mnist/categorical_prior_conv/version_0 --port=6006
+tensorboard --logdir=egs/continuous_cifar10/categorical_prior_conv/version_0 --port=6006
 ```
 
 ## Future development

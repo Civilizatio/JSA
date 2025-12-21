@@ -6,27 +6,27 @@ model:
     joint_model:
       class_path: src.models.components.joint_model.JointModelCategoricalGaussian
       init_args:
-        num_categories: [256]
+        num_categories: [512]
         num_latent_vars: 1
-        embedding_dims: [8]
+        embedding_dims: [9]
         net:
           class_path: src.models.components.networks.ConvDecoder
           init_args:
             final_activation: tanh
             ch: 32 
-            out_ch: 1
+            out_ch: 3
             ch_mult: [1, 2, 4]
             num_res_blocks: 2
             attn_resolutions: []
             dropout: 0.0
             resamp_with_conv: true
             in_channels: null # not used in decoder
-            resolution: 28
-            z_channels: 8 # should calculated based on embedding_dims and num_latent_vars
+            resolution: 32
+            z_channels: 9 # should calculated based on embedding_dims and num_latent_vars
     proposal_model:
       class_path: src.models.components.proposal_model.ProposalModelCategorical
       init_args:
-        num_categories: [256]
+        num_categories: [512]
         num_latent_vars: 1
         net:
           class_path: src.models.components.networks.ConvEncoder
@@ -40,31 +40,42 @@ model:
             norm_type: group
             dropout: 0.0
             resamp_with_conv: true
-            in_channels: 1
-            resolution: 28
-            z_channels: 256 # should calculated based on num_categories and num_latent_vars
+            in_channels: 3
+            resolution: 32
+            z_channels: 512 # should calculated based on num_categories and num_latent_vars
     sampler:
       _target_: src.samplers.misampler.MISampler
       use_cache: false # initial value, will be updated during training
-      dataset_size: 60000
-      element_shape: [7, 7]
+      dataset_size: 50000
+      element_shape: [8, 8]
+    gan_loss:
+      class_path: src.models.components.losses.JSAGANLoss
+      init_args:
+        disc_start: 20 # steps
+        disc_num_layers: 3 # of conv layers
+        disc_in_channels: 3
+        disc_factor: 1.0
+        disc_weight: 1.0
+        disc_loss: hinge
+    
     lr_joint: 3e-3
     lr_proposal: 3e-3
+    lr_discriminator: 1e-4
     num_mis_steps: 2
     cache_start_epoch: 60
 
 data:
-  class_path: src.data.mnist.MNISTDataModule
+  class_path: src.data.cifar10.CIFAR10DataModule
   init_args:
-    root: ./data
-    batch_size: 500
+    root: ./data/cifar10
+    batch_size: 450
     num_workers: 4
 
 trainer:
   logger:
     class_path: lightning.pytorch.loggers.tensorboard.TensorBoardLogger
     init_args:
-      save_dir: ./egs/continuous_mnist
+      save_dir: ./egs/continuous_cifar10
       name: categorical_prior_conv
 
   callbacks:

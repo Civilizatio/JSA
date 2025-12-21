@@ -14,6 +14,7 @@ from src.utils.codebook_utils import (
     plot_codebook_usage_distribution,
     save_images_grid
 )
+from src.models.components.losses import JSAGANLoss
 import math
 import numpy as np
 import matplotlib.pyplot as plt
@@ -25,8 +26,10 @@ class JSA(LightningModule):
         joint_model: BaseJointModel,
         proposal_model: BaseProposalModel,
         sampler,
+        gan_loss: JSAGANLoss = None,
         lr_joint=1e-3,
         lr_proposal=1e-3,
+        lr_discriminator=1e-4,
         num_mis_steps=3,
         cache_start_epoch=0,
     ):
@@ -41,9 +44,11 @@ class JSA(LightningModule):
             proposal_model=self.proposal_model,
         )
 
+        self.gan_loss: JSAGANLoss = gan_loss
         self.automatic_optimization = False
         self.lr_joint = lr_joint
         self.lr_proposal = lr_proposal
+        self.lr_discriminator = lr_discriminator
         self.num_mis_steps = num_mis_steps
         self.cache_start_epoch = cache_start_epoch
 
@@ -66,7 +71,7 @@ class JSA(LightningModule):
                 x, num_samples=1
             )  # [B, 1, ..., num_latent_vars]
         h = h.squeeze(1)  # [B, ..., num_latent_vars]
-        x_hat = self.joint_model.sample(h=h)
+        x_hat = self.joint_model.sample(h=h, num_samples=1).squeeze(1)  # [B, C, H, W]
         return x_hat
 
     def configure_optimizers(self):
@@ -74,7 +79,14 @@ class JSA(LightningModule):
         opt_proposal = torch.optim.Adam(
             self.proposal_model.parameters(), lr=self.lr_proposal
         )
-        return [opt_joint, opt_proposal]
+        optimizers = [opt_joint, opt_proposal]
+        if self.gan_loss is not None:
+            opt_discriminator = torch.optim.Adam(
+                self.gan_loss.discriminator.parameters(), lr=self.lr_discriminator
+            )
+            optimizers.append(opt_discriminator)
+            
+        return optimizers
 
     # ========================= Training =========================
 
@@ -85,28 +97,69 @@ class JSA(LightningModule):
             self.sampler.use_cache = False
 
     def training_step(self, batch, batch_idx):
-        x, _, idx = batch  # x: [B, D], idx: [B,]
+        x, _, idx = batch  # x: [B, C, H, W], idx: [B,]
 
         # MISampling step
         h = self.sampler.sample(x, idx=idx, num_steps=self.num_mis_steps) # [B, 1, ..., num_latent_vars]
 
         # Optimizers
-        opt_joint, opt_proposal = self.optimizers()
+        if self.gan_loss is not None:
+            opt_joint, opt_proposal, opt_discriminator = self.optimizers()
+        else:
+            opt_joint, opt_proposal = self.optimizers()
 
+        # ============= Update Generator (Joint + Proposal) =============
+          
         # Update joint model
         opt_joint.zero_grad()
-        loss_joint = self.joint_model.get_loss(x, h.squeeze(1))
-        self.manual_backward(loss_joint)
+        nll_loss, x_hat = self.joint_model.get_loss(x, h.squeeze(1), return_forward=True)
+        total_loss_joint = nll_loss
+        if self.gan_loss is not None:
+            
+            last_layer = self.joint_model.get_last_layer_weight() if hasattr(self.joint_model, "get_last_layer_weight") else None
+
+            g_loss, g_log = self.gan_loss(
+                inputs=x,
+                reconstructions=x_hat,
+                optimizer_idx=0,
+                global_step=self.global_step,
+                last_layer=last_layer,
+                nll_loss=nll_loss,
+                split="train",
+            )
+            total_loss_joint = total_loss_joint + g_loss
+            self.log_dict(g_log, prog_bar=False)
+        
+        
+        self.manual_backward(total_loss_joint)
         opt_joint.step()
+        
 
         # Update proposal model
         opt_proposal.zero_grad()
         loss_proposal = self.proposal_model.get_loss(h, x)
         self.manual_backward(loss_proposal)
         opt_proposal.step()
+        
+        # ============= Update Discriminator =============
+        if self.gan_loss is not None:
+            opt_discriminator.zero_grad()
+            d_loss, d_log = self.gan_loss(
+                inputs=x,
+                reconstructions=x_hat.detach(),  # detach to avoid gradients to generator
+                optimizer_idx=1,
+                global_step=self.global_step,
+                split="train",
+            )
+            self.manual_backward(d_loss)
+            opt_discriminator.step()
+            self.log_dict(d_log, prog_bar=False)
 
-        self.log("train/loss_joint", loss_joint, prog_bar=True)
+        self.log("train/loss_joint_nll", nll_loss, prog_bar=True)
         self.log("train/loss_proposal", loss_proposal, prog_bar=True)
+        if self.gan_loss is not None:
+            self.log("train/loss_gan_g", g_loss, prog_bar=True)
+            self.log("train/loss_gan_d", d_loss, prog_bar=True)
 
     # ========================= Validation =========================
 
@@ -147,12 +200,12 @@ class JSA(LightningModule):
         x_hat = self.forward(x)  # [16, D]
 
         # show original images
-        grid_orig = torchvision.utils.make_grid(x.view(-1, 1, 28, 28), nrow=5)
+        grid_orig = torchvision.utils.make_grid(x, nrow=5)
         self.logger.experiment.add_image(
             "valid/original_images", grid_orig, self.current_epoch
         )
         # show reconstructed images
-        grid_recon = torchvision.utils.make_grid(x_hat.view(-1, 1, 28, 28), nrow=5)
+        grid_recon = torchvision.utils.make_grid(x_hat, nrow=5)
         self.logger.experiment.add_image(
             "valid/reconstructed_images", grid_recon, self.current_epoch
         )
