@@ -12,7 +12,7 @@ from src.utils.codebook_utils import (
     decode_index_to_multidim,
     compute_category_weights,
     plot_codebook_usage_distribution,
-    save_images_grid
+    save_images_grid,
 )
 from src.models.components.losses import JSAGANLoss
 import math
@@ -35,7 +35,7 @@ class JSA(LightningModule):
     ):
         super().__init__()
         self.save_hyperparameters()
-        
+
         self.joint_model: BaseJointModel = joint_model
         self.proposal_model: BaseProposalModel = proposal_model
         self.sampler: MISampler = instantiate(
@@ -65,7 +65,9 @@ class JSA(LightningModule):
     def forward(self, x, idx=None):
 
         if idx is not None:
-            h = self.sampler.sample(x, idx=idx, num_steps=self.num_mis_steps) # [B, 1, ..., num_latent_vars]
+            h = self.sampler.sample(
+                x, idx=idx, num_steps=self.num_mis_steps
+            )  # [B, 1, ..., num_latent_vars]
         else:  # use proposal model directly
             h = self.proposal_model.sample_latent(
                 x, num_samples=1
@@ -85,11 +87,19 @@ class JSA(LightningModule):
                 self.gan_loss.discriminator.parameters(), lr=self.lr_discriminator
             )
             optimizers.append(opt_discriminator)
-            
+
         return optimizers
 
     # ========================= Training =========================
-
+    def on_train_start(self):
+        
+        # print model structure
+        print("Joint Model Structure:")
+        print(self.joint_model.net)
+        print("Proposal Model Structure:")
+        print(self.proposal_model.net)
+    
+    
     def on_train_epoch_start(self):
         if self.current_epoch >= self.cache_start_epoch:
             self.sampler.use_cache = True
@@ -100,7 +110,9 @@ class JSA(LightningModule):
         x, _, idx = batch  # x: [B, C, H, W], idx: [B,]
 
         # MISampling step
-        h = self.sampler.sample(x, idx=idx, num_steps=self.num_mis_steps) # [B, 1, ..., num_latent_vars]
+        h = self.sampler.sample(
+            x, idx=idx, num_steps=self.num_mis_steps
+        )  # [B, 1, ..., num_latent_vars]
 
         # Optimizers
         if self.gan_loss is not None:
@@ -109,14 +121,20 @@ class JSA(LightningModule):
             opt_joint, opt_proposal = self.optimizers()
 
         # ============= Update Generator (Joint + Proposal) =============
-          
+
         # Update joint model
         opt_joint.zero_grad()
-        nll_loss, x_hat = self.joint_model.get_loss(x, h.squeeze(1), return_forward=True)
+        nll_loss, x_hat = self.joint_model.get_loss(
+            x, h.squeeze(1), return_forward=True
+        )
         total_loss_joint = nll_loss
         if self.gan_loss is not None:
-            
-            last_layer = self.joint_model.get_last_layer_weight() if hasattr(self.joint_model, "get_last_layer_weight") else None
+
+            last_layer = (
+                self.joint_model.get_last_layer_weight()
+                if hasattr(self.joint_model, "get_last_layer_weight")
+                else None
+            )
 
             g_loss, g_log = self.gan_loss(
                 inputs=x,
@@ -129,18 +147,16 @@ class JSA(LightningModule):
             )
             total_loss_joint = total_loss_joint + g_loss
             self.log_dict(g_log, prog_bar=False)
-        
-        
+
         self.manual_backward(total_loss_joint)
         opt_joint.step()
-        
 
         # Update proposal model
         opt_proposal.zero_grad()
         loss_proposal = self.proposal_model.get_loss(h, x)
         self.manual_backward(loss_proposal)
         opt_proposal.step()
-        
+
         # ============= Update Discriminator =============
         if self.gan_loss is not None:
             opt_discriminator.zero_grad()
@@ -170,7 +186,7 @@ class JSA(LightningModule):
             self.num_categories = self.proposal_model._num_categories
             self.codebook_size = math.prod(self.num_categories)
             self.codebook_counter = torch.zeros(
-                self.codebook_size, dtype=torch.long, device=self.device 
+                self.codebook_size, dtype=torch.long, device=self.device
             )
 
     def validation_step(self, batch, batch_idx):
@@ -249,10 +265,11 @@ class JSA(LightningModule):
     def get_nll(self, x, idx):
 
         # MISampling step
-        h = self.sampler.sample(x, idx=idx, num_steps=self.num_mis_steps) # [B, 1, ..., num_latent_vars]
+        h = self.sampler.sample(
+            x, idx=idx, num_steps=self.num_mis_steps
+        )  # [B, 1, ..., num_latent_vars]
         h = h.squeeze(1)  # [B, ..., num_latent_vars]
 
-        
         # log p(x) ~ log p(x,h) - log q(h|x)
         log_nll = self.joint_model.log_joint_prob(
             x, h
@@ -291,7 +308,7 @@ class JSA(LightningModule):
 
         # Calculate indices
         indices = encode_multidim_to_index(h, self.num_categories)  # [B]
-        
+
         self.codebook_counter.index_add_(
             0, indices, torch.ones_like(indices, dtype=torch.long)
         )

@@ -90,9 +90,6 @@ class ActNorm(nn.Module):
         return h
 
 
-
-
-
 class NLayerDiscriminator(nn.Module):
     """Defines a PatchGAN discriminator as in Pix2Pix
     --> see https://github.com/junyanz/pytorch-CycleGAN-and-pix2pix/blob/master/models/networks.py

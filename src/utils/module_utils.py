@@ -22,7 +22,8 @@ def get_act_func_by_name(name):
         "elu": nn.ELU,
         "selu": nn.SELU,
         "silu": nn.SiLU,
-        "softplus": nn.Softplus
+        "softplus": nn.Softplus,
+        "swish": nn.SiLU,
         
     }
 

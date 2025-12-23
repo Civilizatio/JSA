@@ -160,7 +160,7 @@ def main(exp_dir, config_path, checkpoint_path):
 
 if __name__ == "__main__":
 
-    exp_dir = "egs/continuous_mnist/categorical_prior_conv/version_0"
+    exp_dir = "egs/continuous_mnist/categorical_prior_conv/version_1"
     config_path = f"{exp_dir}/config.yaml"
     checkpoint_path = f"{exp_dir}/checkpoints/best-checkpoint.ckpt"
     main(exp_dir, config_path, checkpoint_path)
