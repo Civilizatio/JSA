@@ -165,9 +165,9 @@ class NLayerDiscriminator(nn.Module):
     
 
 
-class DummyLoss(nn.Module):
-    def __init__(self):
-        super().__init__()
+# class DummyLoss(nn.Module):
+#     def __init__(self):
+#         super().__init__()
 
 
 

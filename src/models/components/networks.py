@@ -410,7 +410,7 @@ class Decoder(nn.Module):
     def __init__(
         self,
         *,
-        ch,
+        ch: int,
         out_ch,
         ch_mult=(1, 2, 4, 8),
         num_res_blocks,

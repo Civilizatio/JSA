@@ -8,6 +8,7 @@ import numpy as np
 import os
 import logging
 import shutil
+from lightning.pytorch.cli import LightningCLI
 
 from src.utils.codebook_utils import (
     encode_multidim_to_index,
@@ -69,9 +70,16 @@ def main(exp_dir, config_path, checkpoint_path):
     logger.info(f"Loading model from {checkpoint_path}...")
 
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
-    model = JSA.load_from_checkpoint(
-       checkpoint_path=checkpoint_path
+    cli = LightningCLI(
+        run=False,
+        args=[
+            "--config", config_path,
+        ]
     )
+    
+    model = cli.model
+    ckpt = torch.load(checkpoint_path, map_location=device)
+    model.load_state_dict(ckpt["state_dict"])
     model=model.to(device)
     model.eval()
 
@@ -160,7 +168,7 @@ def main(exp_dir, config_path, checkpoint_path):
 
 if __name__ == "__main__":
 
-    exp_dir = "egs/continuous_mnist/categorical_prior_conv/version_1"
-    config_path = f"{exp_dir}/config.yaml"
+    exp_dir = "egs/continuous_cifar10/categorical_prior_conv/version_16"
+    config_path = "./configs/categorical_prior_continuous_cifar10_conv.yaml"
     checkpoint_path = f"{exp_dir}/checkpoints/best-checkpoint.ckpt"
     main(exp_dir, config_path, checkpoint_path)

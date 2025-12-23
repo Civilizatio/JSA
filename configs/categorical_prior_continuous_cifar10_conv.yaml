@@ -8,14 +8,14 @@ model:
       init_args:
         num_categories: [1024]
         num_latent_vars: 1
-        embedding_dims: [256]
+        embedding_dims: [12]
         net:
           class_path: src.models.components.networks.ConvDecoder
           init_args:
             final_activation: tanh
             ch: 64 
             out_ch: 3
-            ch_mult: [1, 2]
+            ch_mult: [1, 2, 4]
             num_res_blocks: 2
             attn_resolutions: []
             activation: swish
@@ -24,7 +24,7 @@ model:
             resamp_with_conv: true
             in_channels: null # not used in decoder
             resolution: 32
-            z_channels: 256 # should calculated based on embedding_dims and num_latent_vars
+            z_channels: 12 # should calculated based on embedding_dims and num_latent_vars
     proposal_model:
       class_path: src.models.components.proposal_model.ProposalModelCategorical
       init_args:
@@ -35,7 +35,7 @@ model:
           init_args:
             ch: 64
             out_ch: null # not used in encoder
-            ch_mult: [1, 2]
+            ch_mult: [1, 2, 4]
             num_res_blocks: 2
             attn_resolutions: []
             activation: swish
@@ -49,7 +49,7 @@ model:
       _target_: src.samplers.misampler.MISampler
       use_cache: false # initial value, will be updated during training
       dataset_size: 50000
-      element_shape: [8, 8]
+      element_shape: [8, 8] # height and width of latent variable
     gan_loss: null
       # class_path: src.models.components.losses.JSAGANLoss
       # init_args:
@@ -60,11 +60,11 @@ model:
       #   disc_weight: 1.0
       #   disc_loss: hinge
     
-    lr_joint: 1e-3
-    lr_proposal: 1e-3
+    lr_joint: 3e-3
+    lr_proposal: 3e-3
     lr_discriminator: 1e-3
     num_mis_steps: 5
-    cache_start_epoch: 120
+    cache_start_epoch: 200
 
 data:
   class_path: src.data.cifar10.CIFAR10DataModule
@@ -113,7 +113,7 @@ trainer:
         norm_type: 2
         log_every_n_steps: 1
 
-  max_epochs: 200
+  max_epochs: 400
   accelerator: gpu
   devices: [4, 5, 6, 7]
   strategy: ddp_find_unused_parameters_true

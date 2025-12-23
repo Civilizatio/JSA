@@ -9,11 +9,9 @@ from src.samplers.misampler import MISampler
 from src.base.base_jsa_modules import BaseJointModel, BaseProposalModel
 from src.utils.codebook_utils import (
     encode_multidim_to_index,
-    decode_index_to_multidim,
-    compute_category_weights,
     plot_codebook_usage_distribution,
-    save_images_grid,
 )
+
 from src.models.components.losses import JSAGANLoss
 import math
 import numpy as np
@@ -34,7 +32,7 @@ class JSA(LightningModule):
         cache_start_epoch=0,
     ):
         super().__init__()
-        self.save_hyperparameters()
+        # self.save_hyperparameters(ignore=["joint_model", "proposal_model", "sampler", "gan_loss"])
 
         self.joint_model: BaseJointModel = joint_model
         self.proposal_model: BaseProposalModel = proposal_model
@@ -55,7 +53,7 @@ class JSA(LightningModule):
         # For visualization during validation
         self.validation_step_outputs = []
 
-        self.log_codebook_utilization_valid = False
+        self.log_codebook_utilization_valid = True
         self.log_codebook_utilization_test = False
 
     def setup(self, stage=None):
@@ -173,10 +171,15 @@ class JSA(LightningModule):
 
         self.log("train/loss_joint_nll", nll_loss, prog_bar=True)
         self.log("train/loss_proposal", loss_proposal, prog_bar=True)
-        if self.gan_loss is not None:
-            self.log("train/loss_gan_g", g_loss, prog_bar=True)
-            self.log("train/loss_gan_d", d_loss, prog_bar=True)
+        
 
+    def on_train_epoch_end(self):
+        accept_rate = self.sampler.get_acceptance_rate()
+        self.log("train/mis_acceptance_rate", accept_rate, prog_bar=True)
+        
+        # reset
+        self.sampler.reset_acceptance_stats()
+    
     # ========================= Validation =========================
 
     def on_validation_start(self):
@@ -202,6 +205,7 @@ class JSA(LightningModule):
         if self.log_codebook_utilization_valid:
             # Update codebook counter
             h = self.proposal_model.encode(x)
+            h = h.view(-1, self.num_latent_vars)  # [B*H*W, num_latent_vars]
             # Calculate 1D indices from multi-dimensional categorical latent variables
             indices = encode_multidim_to_index(h, self.num_categories)  # [B]
             self.codebook_counter.index_add_(
@@ -266,7 +270,7 @@ class JSA(LightningModule):
 
         # MISampling step
         h = self.sampler.sample(
-            x, idx=idx, num_steps=self.num_mis_steps
+            x, idx=idx, num_steps=self.num_mis_steps, parallel=True
         )  # [B, 1, ..., num_latent_vars]
         h = h.squeeze(1)  # [B, ..., num_latent_vars]
 

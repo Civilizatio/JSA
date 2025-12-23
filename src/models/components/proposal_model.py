@@ -170,7 +170,7 @@ class ProposalModelCategorical(BaseProposalModel):
         )  # List of [B, ..., num_categories_i]
         return split_logits
 
-    def sample_latent(self, x, num_samples=1):
+    def sample_latent(self, x, num_samples=1, return_logits=False):
         """Sample h ~ q(h|x)
 
         Returns:
@@ -193,6 +193,9 @@ class ProposalModelCategorical(BaseProposalModel):
         h_samples = torch.cat(
             h_samples_list, dim=-1
         )  # [B, num_samples, ..., num_latent_vars]
+        
+        if return_logits:
+            return h_samples.float(), split_logits  # dtype=torch.float
         return h_samples.float()  # dtype=torch.float
 
     def encode(self, x):
@@ -216,15 +219,27 @@ class ProposalModelCategorical(BaseProposalModel):
             x: Input tensor of shape [B, ...].
 
         Attention:
-            ... in h and x are not the same, they represent different dimensions.
+            `...` in h and x are not the same, they represent different dimensions.
             For example, if x has shape [B, C, H, W], then ... in x represents [C, H, W].
             However, h has shape [B, H, W, num_latent_vars], then ... in h represents [H, W].
         Returns:
             log_cond: Tensor of shape [B] containing log probabilities log q(h|x).
         """
         split_logits = self.forward(x)  # List of [B, ..., num_categories_i]
-
-        if h.dim() == x.dim():
+        log_cond = self.log_prob_from_logits(h, split_logits)  # [B, num_samples]
+        return log_cond  # [B, num_samples]
+    
+    def log_prob_from_logits(self, h, split_logits):
+        """ Compute log q(h|x) given precomputed split logits/
+        
+        Args:
+            h: Tensor of latent variable indices, shape [B, ..., num_latent_vars], or [B, num_samples, ..., num_latent_vars]
+            split_logits: List of tensors, whose length is self.num_latent_vars,
+                each shape [B, ..., num_categories_i]
+        Returns:
+            log_cond: Tensor of shape [B, num_samples] containing log probabilities log q(h|x).
+        """
+        if h.dim() == split_logits[0].dim():
             h = h.unsqueeze(1)  # [B, 1, ..., num_latent_vars]
 
         log_cond = 0.0
@@ -241,6 +256,51 @@ class ProposalModelCategorical(BaseProposalModel):
             log_cond += log_cond_i
 
         return log_cond  # [B, num_samples]
+    
+    def log_conditional_prob_diff(self, x, h_new, h_old, split_logits=None):
+        """
+        Calculate log q(h_new|x) - log q(h_old|x) efficiently.
+        
+        Args:
+            x: [B, ...]
+            h_new: [B, num_samples, ..., num_latent_vars]
+            h_old: [B, num_samples, ..., num_latent_vars]
+            split_logits: Optional precomputed logits. List of [B, ..., num_categories]
+            
+        Returns:
+            log_q_diff: [B, num_samples]
+        """
+        if split_logits is None:
+            split_logits = self.forward(x)
+            
+        if isinstance(split_logits, torch.Tensor):
+            split_logits = [split_logits]
+            
+        log_q_diff = 0.0
+        
+        for i, logits in enumerate(split_logits):
+            # logits: [B, ..., num_categories_i]
+            logits_expanded = logits.unsqueeze(1) # [B, 1, ..., num_categories_i]
+            
+            h_new_i = h_new[..., i].long() # [B, num_samples, ...]
+            h_old_i = h_old[..., i].long() # [B, num_samples, ...]
+            
+            # Gather logits
+            # logits_expanded: [B, 1, ..., C]
+            # h indices: [B, S, ...] -> [B, S, ..., 1]
+            
+            logits_h_new = torch.gather(logits_expanded, -1, h_new_i.unsqueeze(-1)).squeeze(-1)
+            logits_h_old = torch.gather(logits_expanded, -1, h_old_i.unsqueeze(-1)).squeeze(-1)
+            
+            # Sum over spatial dimensions if any (dims between 1 (samples) and last)
+            if logits_h_new.dim() > 2:
+                dims_to_sum = tuple(range(2, logits_h_new.dim()))
+                logits_h_new = logits_h_new.sum(dim=dims_to_sum)
+                logits_h_old = logits_h_old.sum(dim=dims_to_sum)
+                
+            log_q_diff += (logits_h_new - logits_h_old)
+            
+        return log_q_diff # [B, num_samples]
 
     def get_loss(self, h, x):
         """Compute negative log conditional probability as loss"""

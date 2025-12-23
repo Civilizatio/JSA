@@ -282,7 +282,7 @@ class JointModelCategoricalGaussian(BaseJointModel):
     @property
     def latent_dim(self):
         return self._latent_dim
-    
+
     def get_last_layer_weight(self):
         return self.net.get_last_layer_weight()
 
@@ -298,6 +298,26 @@ class JointModelCategoricalGaussian(BaseJointModel):
         )
         log_p_h = -torch.sum(torch.log(num_categories_tensor))
         return log_p_h
+
+    def log_joint_prob_multiple_samples(self, x, h):
+        """Compute log p(x, h) for multiple samples of h
+
+        Args:
+            x: observed data, shape [B, ...]
+            h: latent variables, shape [B, num_samples, ..., num_latent_vars]
+        Returns:
+            log_probs: shape [B, num_samples]
+        """
+        batch_size, num_samples = h.shape[0], h.shape[1]
+        # Flatten first two dimensions to compute log_joint_prob
+        h_flat = h.reshape(
+            batch_size * num_samples, *h.shape[2:]
+        )  # [B * num_samples, ..., num_latent_vars]
+        log_probs_flat = self.log_joint_prob(
+            x.repeat_interleave(num_samples, dim=0), h_flat
+        )  # [B * num_samples]
+        log_probs = log_probs_flat.view(batch_size, num_samples)  # [B, num_samples]
+        return log_probs
 
     def log_joint_prob(self, x, h):
         """Must compute log p(x, h) = log p(h) + log p(x|h)
@@ -317,9 +337,9 @@ class JointModelCategoricalGaussian(BaseJointModel):
         # We assume independent Gaussian distribution for each pixel with fixed variance (e.g., 1.0)
         # Shape of h: [B, ..., num_latent_vars] or [B, num_samples, ..., num_latent_vars]
         mean_x = self.forward(h)  # [B, ...]
-        
-        num_samples=1
-        if x.shape[0] != mean_x.shape[0]: # multiple samples case
+
+        num_samples = 1
+        if x.shape[0] != mean_x.shape[0]:  # multiple samples case
             num_samples = mean_x.shape[0] // x.shape[0]
             x = x.repeat_interleave(num_samples, dim=0)  # [N, ...]
 
@@ -328,8 +348,41 @@ class JointModelCategoricalGaussian(BaseJointModel):
             dim=list(range(1, x.dim()))
         )  # sum over dimensions, shape [N,]
 
-        log_p_x_given_h = log_p_x_given_h.view(-1, num_samples) # [B, num_samples]
+        log_p_x_given_h = log_p_x_given_h.view(-1, num_samples)  # [B, num_samples]
         return log_p_h + log_p_x_given_h  # log p(x, h)
+    
+    def log_joint_prob_diff(self, x, h_new, h_old):
+        """Compute log p(x, h_new) - log p(x, h_old)
+
+        Args:
+            x: observed data, shape [B, ...]
+            h_new: new latent variables, shape [B, num_samples, ..., num_latent_vars]
+            h_old: old latent variables, shape [B, num_samples, ..., num_latent_vars]
+        Returns:
+            log_prob_diff: shape [B, num_samples]
+        """
+        batch_size, num_samples = h_new.shape[0], h_new.shape[1]
+        
+        h_new_flat = h_new.reshape(
+            batch_size * num_samples, *h_new.shape[2:]
+        )  # [B * num_samples, ..., num_latent_vars]
+        
+        h_old_flat = h_old.reshape(
+            batch_size * num_samples, *h_old.shape[2:]
+        )  # [B * num_samples, ..., num_latent_vars]
+        
+        mu_new = self.forward(h_new_flat)  # [B * num_samples, ...]
+        mu_old = self.forward(h_old_flat)  # [B * num_samples, ...]
+        
+        mu_new = mu_new.view(batch_size, num_samples, *mu_new.shape[1:])  # [B, num_samples, ...]
+        mu_old = mu_old.view(batch_size, num_samples, *mu_old.shape[1:])  # [B, num_samples, ...]
+        
+        x_expanded = x.unsqueeze(1)
+        
+        diff = (mu_new-mu_old)*(x_expanded - 0.5*(mu_new + mu_old))/(self.SIGMA**2)
+        log_prob_diff = diff.sum(dim=list(range(2, diff.dim())))  # sum over dimensions, shape [B, num_samples]
+        
+        return log_prob_diff  # shape [B, num_samples]
 
     def sample(self, h=None, num_samples=1):
         """Sample x ~ p(x|h)
@@ -350,10 +403,14 @@ class JointModelCategoricalGaussian(BaseJointModel):
             ]
             h = torch.cat(h_indices, dim=-1)  # shape [1, num_latent_vars]
 
-        mean_x = self.forward(h) # [B, ...]
+        mean_x = self.forward(h)  # [B, ...]
         gaussian_dist = torch.distributions.Normal(loc=mean_x, scale=self.SIGMA)
         x_samples = gaussian_dist.sample((num_samples,))  # [num_samples, B, ...]
-        x_samples = torch.clamp(x_samples, 0.0, 1.0).permute(1, 0, *range(2, x_samples.dim())).contiguous()  # [B, num_samples, ...]
+        x_samples = (
+            torch.clamp(x_samples, 0.0, 1.0)
+            .permute(1, 0, *range(2, x_samples.dim()))
+            .contiguous()
+        )  # [B, num_samples, ...]
         return x_samples  # [B, num_samples, ...]
 
     def decode(self, h):
@@ -386,15 +443,18 @@ class JointModelCategoricalGaussian(BaseJointModel):
         """
 
         mean_x = self.forward(h)  # [N, ...]
-        if x.shape[0] != mean_x.shape[0]: # multiple samples case
+        if x.shape[0] != mean_x.shape[0]:  # multiple samples case
             x = x.repeat_interleave(mean_x.shape[0] // x.shape[0], dim=0)  # [N, ...]
-        
+
         # Using MSE loss as negative log likelihood
         mse_loss = nn.MSELoss(reduction="mean")
-        log_p_x_given_h = -mse_loss(mean_x, x) # scalar
+        log_p_x_given_h = -mse_loss(mean_x, x)  # scalar
         log_joint = log_p_x_given_h
         if return_forward:
-            return -log_joint.mean(), mean_x  # negative log joint probability and forward output
+            return (
+                -log_joint.mean(),
+                mean_x,
+            )  # negative log joint probability and forward output
         else:
             return -log_joint.mean()  # negative log joint probability
 
@@ -408,16 +468,14 @@ class JointModelCategoricalGaussian(BaseJointModel):
             mean_x: decoded observed data, shape [N, ...]
         """
         h_embedded = [
-            embedding(
-                h[..., i].long()
-            )  # [N, ...] -> [N, ..., embedding_dim_i]
+            embedding(h[..., i].long())  # [N, ...] -> [N, ..., embedding_dim_i]
             for i, embedding in enumerate(self.embeddings)
         ]
         h_densed = torch.cat(h_embedded, dim=-1)  # [N, ..., latent_dim]
-        
+
         # Here, for MLP, h should be [N, latent_dim], we need to do nothing.
         # For CNN, h should be [N, H, W, latent_dim], we need to permute to [N, latent_dim, H, W].
         # However, we should not assume the net type here, so we just pass h_densed, and let the net handle it.
-        
+
         mean_x = self.net(h_densed)  # [N, ...]
         return mean_x  # [N, ...]

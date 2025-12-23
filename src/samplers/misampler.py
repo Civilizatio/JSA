@@ -41,6 +41,7 @@ class MISampler(BaseSampler):
         self.dataset_size = dataset_size
         self.use_cache = use_cache  # use the setter, which initializes cache if needed
         self.element_shape = element_shape
+        self.reset_acceptance_stats() # reset acceptance statistics
 
     @property
     def use_cache(self):
@@ -83,6 +84,9 @@ class MISampler(BaseSampler):
 
     def to(self, device):
         """Move sampler to device, including cache if present"""
+        self._accept_cnt = self._accept_cnt.to(device)
+        self._total_cnt = self._total_cnt.to(device)
+        
         if self.use_cache:
             self.cache = self.cache.to(device)
             self.updated_mask = self.updated_mask.to(device)
@@ -113,24 +117,45 @@ class MISampler(BaseSampler):
             h_old = h_new.clone()
         return h_old  # [B, num_samples, ..., num_latent_vars]
 
+    def reset_acceptance_stats(self):
+        self._accept_cnt = torch.zeros(1, device=next(self.proposal_model.parameters()).device)
+        self._total_cnt = torch.zeros(1, device=next(self.proposal_model.parameters()).device)
+    
+    
     @torch.no_grad()
-    def _cal_acceptance_prob(self, x, h_new, h_old):
+    def _cal_acceptance_prob(self, x, h_new, h_old, h_logits=None):
         """Calculate acceptance probability for MIS step
 
         a = p(x,h') * q(h|x) / (p(x,h) * q(h'|x))
+
+        Args:
+            x: Input data, shape [batch_size, ...].
+            h_new: Proposed latent variables, shape [batch_size, num_samples, ..., num_latent_vars].
+            h_old: Current latent variables, shape [batch_size, num_samples, ..., num_latent_vars].
+            h_logits: (Optional) Precomputed logits from proposal model, to save computation.
+        Returns:
+            accept_prob: Acceptance probabilities, shape [batch_size, num_samples].
         """
-        
+
         # x: [B, ...]
         # h_new, h_old: [B, num_samples, ..., num_latent_vars]
-        batch_size, num_samples = h_new.shape[0], h_new.shape[1]
-        h_new_flat = h_new.reshape(batch_size * num_samples, *h_new.shape[2:])  # [B * num_samples, ...]
-        h_old_flat = h_old.reshape(batch_size * num_samples, *h_old.shape[2:])  # [B * num_samples, ...]
+        log_p_new = self.joint_model.log_joint_prob_multiple_samples(
+            x, h_new
+        )  # [B,num_samples]
+        log_p_old = self.joint_model.log_joint_prob_multiple_samples(
+            x, h_old
+        )  # [B,num_samples]
 
-        log_p_new = self.joint_model.log_joint_prob(x, h_new_flat).reshape(batch_size, num_samples) # [B,num_samples]
-        log_p_old = self.joint_model.log_joint_prob(x, h_old_flat).reshape(batch_size, num_samples) # [B,num_samples]
-
-        log_q_new = self.proposal_model.log_conditional_prob(h_new, x) # [B, num_samples]
-        log_q_old = self.proposal_model.log_conditional_prob(h_old, x) # [B, num_samples]
+        if h_logits is not None:
+            log_q_new = self.proposal_model.log_prob_from_logits(h_new, h_logits)
+            log_q_old = self.proposal_model.log_prob_from_logits(h_old, h_logits)
+        else:
+            log_q_new = self.proposal_model.log_conditional_prob(
+                h_new, x
+            )  # [B, num_samples]
+            log_q_old = self.proposal_model.log_conditional_prob(
+                h_old, x
+            )  # [B, num_samples]
 
         # Check for NaN or Inf
         if (
@@ -152,12 +177,16 @@ class MISampler(BaseSampler):
                 "Infinity encountered in log probabilities during acceptance probability calculation."
             )
 
-        log_accept = (log_p_new + log_q_old) - (log_p_old + log_q_new) # [B, num_samples]
-        accept_prob = torch.exp(torch.clamp(log_accept, max=0.0, min=-100.0)) # [B, num_samples]
-        return accept_prob # [B, num_samples]
+        log_accept = (log_p_new + log_q_old) - (
+            log_p_old + log_q_new
+        )  # [B, num_samples]
+        accept_prob = torch.exp(
+            torch.clamp(log_accept, max=0.0, min=-100.0)
+        )  # [B, num_samples]
+        return accept_prob  # [B, num_samples]
 
     @torch.no_grad()
-    def _cal_acceptance_prob_faster(self, x, h_new, h_old):
+    def _cal_acceptance_prob_faster(self, x, h_new, h_old, h_logits=None):
         """Calculate acceptance probability for MIS step. Only for categorical latent variables and
         gaussian joint model.
 
@@ -172,37 +201,12 @@ class MISampler(BaseSampler):
         so, log q(h|x) - log q(h'|x) = logit_h - logit_h'
 
         """
-        raise NotImplementedError("This faster acceptance probability calculation is not implemented yet.")
-        assert (
-            self.joint_model.__class__.__name__ == "JointModelCategoricalGaussian"
-            and self.proposal_model.__class__.__name__ == "ProposalModelCategorical"
-            and self.proposal_model.num_categories is not None
-            and len(self.proposal_model.num_categories) == 1
-        ), "This faster acceptance probability calculation only supports categorical latent variables with one codebook and gaussian joint model."
 
-        mu_h_new = self.joint_model(h_new)  # [B, input_dim, num_samples]
-        mu_h_old = self.joint_model(h_old)  # [B, input_dim, num_samples]
-
-        sigma_sq = self.joint_model.sigma**2  # scalar
-
-        x_expand = x.unsqueeze(-1)  # [B, input_dim, 1]
-        term1 = (mu_h_new - mu_h_old).permute(0, 2, 1)  # [B, num_samples, input_dim]
-        term2 = x_expand - 0.5 * (mu_h_new + mu_h_old)  # [B, input_dim, num_samples]
-        log_p_diff = (1.0 / sigma_sq) * torch.bmm(term1, term2).squeeze(
-            -1
-        )  # [B, num_samples]
-        logits = self.proposal_model.forward(x)[0]  # [B, latent_dim]
-        # get logits for h_new and h_old
-        logits_h_new = torch.gather(
-            logits, 1, h_new.squeeze(-1).long()
-        )  # [B, num_samples]
-        logits_h_old = torch.gather(
-            logits, 1, h_old.squeeze(-1).long()
-        )  # [B, num_samples]
-
-        log_q_diff = logits_h_old - logits_h_new  # [B, num_samples]
-
-        log_accept = log_p_diff + log_q_diff  # [B, num_samples]
+        log_p_diff = self.joint_model.log_joint_prob_diff(x, h_new, h_old) # [B, num_samples]
+        log_q_diff = self.proposal_model.log_conditional_prob_diff(
+            x, h_new, h_old, h_logits
+        ) # [B, num_samples]
+        log_accept = log_p_diff - log_q_diff  # [B, num_samples]
         accept_prob = torch.exp(torch.clamp(log_accept, max=0.0, min=-100.0))
         return accept_prob
 
@@ -225,19 +229,25 @@ class MISampler(BaseSampler):
             h_old = self._init_h_old(idx, self.proposal_model.sample_latent(x))
 
         # Propose from q_phi(h|x)
-        h_new = self.proposal_model.sample_latent(x)  # [batch_size, num_samples, ..., num_latent_vars]
+        h_new = self.proposal_model.sample_latent(
+            x
+        )  # [batch_size, num_samples, ..., num_latent_vars]
 
         # Compute acceptance probability
-        accept_prob = self._cal_acceptance_prob(x, h_new, h_old)  # [batch_size, num_samples]
-        # accept_prob = self._cal_acceptance_prob_faster(
-        #     x, h_new, h_old
-        # )  # [batch_size, num_samples]
+        # accept_prob = self._cal_acceptance_prob(x, h_new, h_old)  # [batch_size, num_samples]
+        accept_prob = self._cal_acceptance_prob_faster(
+            x, h_new, h_old
+        )  # [batch_size, num_samples]
 
         u = torch.rand_like(accept_prob)
         accept = (u < accept_prob).float()  # [batch_size, num_samples]
-
+        self._accept_cnt += accept.sum()
+        self._total_cnt += accept.numel()
+        
         target_shape = accept.shape + (1,) * (h_new.dim() - accept.dim())
-        accept = accept.view(target_shape)  # reshape for broadcasting, [batch_size, num_samples, 1, ..., 1]
+        accept = accept.view(
+            target_shape
+        )  # reshape for broadcasting, [batch_size, num_samples, 1, ..., 1]
         # Update sample
         h_next = (
             accept * h_new + (1 - accept) * h_old
@@ -290,51 +300,72 @@ class MISampler(BaseSampler):
         Returns:
             h_final: Final sampled latent variables, shape [batch_size, latent_dim].
         """
+        # Generate all proposal samples in parallel
+        h_new_all, h_logits = self.proposal_model.sample_latent(
+            x, num_samples=num_steps + 1, return_logits=True
+        )  # [B, num_steps+1, ..., num_latent_vars]
 
-        # Check if multi-step sampling is meaningful
-        # if not self.use_cache and num_steps > 1:
-        #     raise ValueError(
-        #         "Multi-step sampling (num_steps > 1) is not meaningful when use_cache=False."
-        #     )
-
-        raise NotImplementedError("This parallel multi-step sampling is not implemented yet.")
-        # Initialize h_old from cache or proposal model
+        # Use the first proposal to initialize h_old
         h_old = self._init_h_old(
-            idx,
-            self.proposal_model.sample_latent(
-                x
-            ),  # [B, num_samples, ..., num_latent_vars]
+            idx, h_new_all[:, 0:1, ...]
+        )  # [B, 1, ..., num_latent_vars]
+        
+        use_faster = (
+            self.joint_model.__class__.__name__ == "JointModelCategoricalGaussian"
+            and self.proposal_model.__class__.__name__ == "ProposalModelCategorical"
+        )
+        cal_acceptance_prob_fn = (
+            self._cal_acceptance_prob_faster
+            if use_faster
+            else self._cal_acceptance_prob
         )
 
-        # Generate all proposal samples in parallel
-        h_new = self.proposal_model.sample_latent(
-            x, num_samples=num_steps
-        )  # [Batch, num_latent_vars, num_steps]
-
         # Sequentially compute acceptance probabilities and update samples
-        for t in range(num_steps):
-            # Get the t-th proposal sample
-            h_new_t = (
-                h_new[:, :, t].unsqueeze(-1).float()
-            )  # [batch_size, num_latent_vars, 1]
-
-            # Compute acceptance probability
-            accept_prob = self._cal_acceptance_prob(x, h_new_t, h_old)
-
-            # Accept/reject step
+        for step in range(num_steps):
+            h_new = h_new_all[
+                :, step + 1 : step + 2, ...
+            ]  # [B, 1, ..., num_latent_vars]
+            accept_prob = cal_acceptance_prob_fn(
+                x, h_new, h_old, h_logits=h_logits
+            )  # [B, 1]
             u = torch.rand_like(accept_prob)
-            accept = (u < accept_prob).float().unsqueeze(-1)  # [batch_size, 1, 1]
+            accept = (u < accept_prob).float()  # [B, 1]
+            
+            self._accept_cnt += accept.sum()
+            self._total_cnt += accept.numel()
 
-            # Update samples
-            h_old = accept * h_new_t + (1 - accept) * h_old
-            h_old = h_old.round()  # Avoid numerical issues
+            target_shape = accept.shape + (1,) * (h_new.dim() - accept.dim())
+            accept = accept.view(target_shape)  # reshape for broadcasting
 
-        # Update cache
+            # Update sample
+            h_next = (
+                accept * h_new + (1 - accept) * h_old
+            )  # [B, 1, ..., num_latent_vars]
+            h_next = h_next.round()  # Avoid numerical issues
+            h_old = h_next  # Update h_old for next step
+
         if self.use_cache and idx is not None:
-            self.cache[idx] = h_old.detach().squeeze(-1).long()
+            # Update cache with the final samples
+            h_next_selected = h_old[
+                :, 0, ...
+            ]  # [batch_size, ..., num_latent_vars], single sample
+            self.cache[idx] = h_next_selected.detach().long()
             self.updated_mask[idx] = True  # mark as updated
 
         return h_old
+    
+    @torch.no_grad()
+    def get_acceptance_rate(self):
+        
+        accept = self._accept_cnt.clone()
+        total = self._total_cnt.clone()
+        
+        if dist.is_available() and dist.is_initialized():
+            dist.all_reduce(accept, op=dist.ReduceOp.SUM)
+            dist.all_reduce(total, op=dist.ReduceOp.SUM)
+        if total.item() == 0:
+            return 0.0
+        return (accept / total).item()
 
     def state_dict(self):
         if not self.use_cache:
