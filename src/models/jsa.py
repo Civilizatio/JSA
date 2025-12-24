@@ -11,6 +11,7 @@ from src.utils.codebook_utils import (
     encode_multidim_to_index,
     plot_codebook_usage_distribution,
 )
+from src.utils.controllers import ParameterController
 
 from src.models.components.losses import JSAGANLoss
 import math
@@ -30,6 +31,14 @@ class JSA(LightningModule):
         lr_discriminator=1e-4,
         num_mis_steps=3,
         cache_start_epoch=0,
+        init_from_ckpt: str = None,
+        init_mode: str = "resume",  # "resume" or "warm_start"
+        init_strict: bool = False,
+        adaptive_sigma: bool = False,
+        target_acceptance_range: tuple = (0.2, 0.5),
+        sigma_controller_rate: float = 0.01,
+        sigma_min: float = 0.01,
+        sigma_max: float = 1.0,
     ):
         super().__init__()
         # self.save_hyperparameters(ignore=["joint_model", "proposal_model", "sampler", "gan_loss"])
@@ -50,6 +59,25 @@ class JSA(LightningModule):
         self.num_mis_steps = num_mis_steps
         self.cache_start_epoch = cache_start_epoch
 
+        self.init_from_ckpt = init_from_ckpt
+        self.init_mode = init_mode
+        self.init_strict = init_strict
+        self._weights_loaded = False  # guard to ensure weights are loaded only once
+
+        self.adaptive_sigma = adaptive_sigma
+        if self.adaptive_sigma:
+            self.sigma_controller = ParameterController(
+                param_name="mis_sigma",
+                target_range=target_acceptance_range,
+                adjustment_rate=sigma_controller_rate,
+                min_val=sigma_min,
+                max_val=sigma_max,
+                mode="exponential",
+                direction="inverse",
+            )
+        else:
+            self.sigma_controller = None
+
         # For visualization during validation
         self.validation_step_outputs = []
 
@@ -59,6 +87,51 @@ class JSA(LightningModule):
     def setup(self, stage=None):
         device = self.device
         self.sampler.to(device)
+
+    def on_fit_start(self):
+        """Warm start or resume from checkpoint if specified
+
+        warm_start: load model weights but not optimizer states
+
+        """
+        if self.init_from_ckpt is None or self._weights_loaded:
+            return
+
+        if self.init_mode not in ["resume", "warm_start"]:
+            raise ValueError(
+                f"Unknown init_mode '{self.init_mode}'. Supported modes are 'resume' and 'warm_start'."
+            )
+
+        ckpt = torch.load(self.init_from_ckpt, map_location=self.device)
+
+        missing, unexpected = self.load_state_dict(
+            ckpt["state_dict"], strict=self.init_strict
+        )
+        if missing or unexpected:
+            print(
+                f"While loading weights from '{self.init_from_ckpt}', missing keys: {missing}, unexpected keys: {unexpected}"
+            )
+
+        if self.init_mode == "warm_start":
+            self.trainer.global_step = 0
+            self.trainer.fit_loop.epoch_loop._batches_that_stepped = (
+                0  # reset batch count
+            )
+
+            # force lr schedulers to be re-initialized
+            if self.trainer.lr_schedulers is not None:
+                for lr_scheduler in self.trainer.lr_schedulers:
+                    lr_scheduler["scheduler"].last_epoch = -1
+
+            # force optimizers to be re-initialized
+            optimizers = self.trainer.optimizers
+            for optimizer in optimizers:
+                optimizer.state = {}
+
+        print(
+            f"Model weights loaded from '{self.init_from_ckpt}' with mode '{self.init_mode}'."
+        )
+        self._weights_loaded = True
 
     def forward(self, x, idx=None):
 
@@ -90,19 +163,21 @@ class JSA(LightningModule):
 
     # ========================= Training =========================
     def on_train_start(self):
-        
+
         # print model structure
         print("Joint Model Structure:")
         print(self.joint_model.net)
         print("Proposal Model Structure:")
         print(self.proposal_model.net)
-    
-    
+
     def on_train_epoch_start(self):
         if self.current_epoch >= self.cache_start_epoch:
             self.sampler.use_cache = True
         else:
             self.sampler.use_cache = False
+
+        # Reset acceptance stats
+        self.sampler.reset_acceptance_stats()
 
     def training_step(self, batch, batch_idx):
         x, _, idx = batch  # x: [B, C, H, W], idx: [B,]
@@ -171,15 +246,36 @@ class JSA(LightningModule):
 
         self.log("train/loss_joint_nll", nll_loss, prog_bar=True)
         self.log("train/loss_proposal", loss_proposal, prog_bar=True)
-        
+
+    def on_train_batch_end(self, outputs, batch, batch_idx):
+        accept_rate = self.sampler.get_acceptance_rate()
+        self.log("train/mis_acceptance_rate", accept_rate, prog_bar=False)
 
     def on_train_epoch_end(self):
-        accept_rate = self.sampler.get_acceptance_rate()
-        self.log("train/mis_acceptance_rate", accept_rate, prog_bar=True)
-        
-        # reset
-        self.sampler.reset_acceptance_stats()
-    
+        if (
+            self.adaptive_sigma
+            and self.sigma_controller is not None
+            and hasattr(self.joint_model, "sigma")
+        ):
+            current_accept_rate = self.sampler.get_acceptance_rate()
+            current_sigma = self.joint_model.sigma.item()
+
+            new_sigma, info = self.sigma_controller.step(
+                current_val=current_sigma, metric_val=current_accept_rate
+            )
+
+            if info["status"] == "adjusting":
+                self.joint_model.sigma.fill_(new_sigma)
+
+            self.log("train/mis_sigma", new_sigma, prog_bar=True)
+            self.log("train/mis_sigma_diff", info["diff"], prog_bar=False)
+
+            if info["status"] == "adjusting":
+                # print only when adjustment happens
+                print(
+                    f"[Adaptive Sigma] Rate: {current_accept_rate:.4f} (Target: {self.sigma_controller.min_target}-{self.sigma_controller.max_target}), Sigma: {current_sigma:.4f} -> {new_sigma:.4f}"
+                )
+
     # ========================= Validation =========================
 
     def on_validation_start(self):

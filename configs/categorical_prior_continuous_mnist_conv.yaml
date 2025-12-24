@@ -9,6 +9,7 @@ model:
         num_categories: [256]
         num_latent_vars: 1
         embedding_dims: [8]
+        sigma: 0.1
         net:
           class_path: src.models.components.networks.ConvDecoder
           init_args:
@@ -18,6 +19,8 @@ model:
             ch_mult: [1, 2, 4]
             num_res_blocks: 2
             attn_resolutions: []
+            activation: swish
+            norm_type: group
             dropout: 0.0
             resamp_with_conv: true
             in_channels: null # not used in decoder
@@ -36,7 +39,7 @@ model:
             ch_mult: [1, 2, 4]
             num_res_blocks: 2
             attn_resolutions: []
-            activation: relu
+            activation: swish
             norm_type: group
             dropout: 0.0
             resamp_with_conv: true
@@ -48,10 +51,31 @@ model:
       use_cache: false # initial value, will be updated during training
       dataset_size: 60000
       element_shape: [7, 7]
-    lr_joint: 3e-3
-    lr_proposal: 3e-3
-    num_mis_steps: 2
-    cache_start_epoch: 60
+    gan_loss: null
+      # class_path: src.models.components.losses.JSAGANLoss
+      # init_args:
+      #   disc_start: 250 # steps
+      #   disc_num_layers: 3 # of conv layers
+      #   disc_in_channels: 1
+      #   disc_factor: 1.0
+      #   disc_weight: 1.0
+      #   disc_loss: hinge
+    
+    lr_joint: 1e-3
+    lr_proposal: 1e-3
+    lr_discriminator: 1e-4
+    num_mis_steps: 10
+    cache_start_epoch: 300
+
+    init_from_ckpt: null
+    init_mode: resume # "resume" or "warm_start"
+    init_strict: false
+
+    adaptive_sigma: false
+    target_acceptance_range: [0.5, 0.8]
+    sigma_controller_rate: 0.01
+    sigma_min: 0.01
+    sigma_max: 0.5
 
 data:
   class_path: src.data.mnist.MNISTDataModule
@@ -77,6 +101,7 @@ trainer:
         mode: min
         save_top_k: 1
         filename: best-checkpoint
+        save_last: true
     # - class_path: lightning.pytorch.callbacks.EarlyStopping # 不使用早停
     #   init_args:
     #     monitor: valid/nll
@@ -100,7 +125,7 @@ trainer:
         norm_type: 2
         log_every_n_steps: 1
 
-  max_epochs: 100
+  max_epochs: 200
   accelerator: gpu
   devices: [4, 5, 6, 7]
   strategy: ddp_find_unused_parameters_true

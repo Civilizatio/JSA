@@ -8,7 +8,8 @@ model:
       init_args:
         num_categories: [1024]
         num_latent_vars: 1
-        embedding_dims: [12]
+        embedding_dims: [64]
+        sigma: 0.1 # initial sigma for Gaussian likelihood
         net:
           class_path: src.models.components.networks.ConvDecoder
           init_args:
@@ -24,7 +25,7 @@ model:
             resamp_with_conv: true
             in_channels: null # not used in decoder
             resolution: 32
-            z_channels: 12 # should calculated based on embedding_dims and num_latent_vars
+            z_channels: 64 # should calculated based on embedding_dims and num_latent_vars
     proposal_model:
       class_path: src.models.components.proposal_model.ProposalModelCategorical
       init_args:
@@ -60,11 +61,21 @@ model:
       #   disc_weight: 1.0
       #   disc_loss: hinge
     
-    lr_joint: 3e-3
-    lr_proposal: 3e-3
-    lr_discriminator: 1e-3
-    num_mis_steps: 5
+    lr_joint: 3e-4
+    lr_proposal: 3e-4
+    lr_discriminator: 1e-4
+    num_mis_steps: 20
     cache_start_epoch: 200
+
+    init_from_ckpt: null
+    init_mode: resume # "resume" or "warm_start"
+    init_strict: false
+
+    adaptive_sigma: false
+    target_acceptance_range: [0.5, 0.8]
+    sigma_controller_rate: 0.01
+    sigma_min: 0.01
+    sigma_max: 0.5
 
 data:
   class_path: src.data.cifar10.CIFAR10DataModule
@@ -90,6 +101,7 @@ trainer:
         mode: min
         save_top_k: 1
         filename: best-checkpoint
+        save_last: true
     # - class_path: lightning.pytorch.callbacks.EarlyStopping # 不使用早停
     #   init_args:
     #     monitor: valid/nll

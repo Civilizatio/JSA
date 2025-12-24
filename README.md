@@ -28,17 +28,16 @@ pip install -r requirements.txt
 
 ```bash
 PYTHONPATH=. python scripts/train.py fit \
-    --config ./configs/categorical_prior_continuous_cifar10_conv.yaml
+    --config ./configs/categorical_prior_continuous_mnist_conv.yaml
 ```
 
 从 `checkpoints` 恢复训练指令：
 
 ```bash
 PYTHONPATH=. python scripts/train.py fit \
-    --config ./configs/bernoulli_prior_binary_mnist.yaml \
-    --ckpt_path ./egs/bernoulli_mnist/binary_mnist/version_4/checkpoints/best-checkpoint.ckpt 
+    --config ./configs/categorical_prior_continuous_cifar10_conv.yaml \
+    --ckpt_path ./egs/continuous_cifar10/categorical_prior_conv/version_0/checkpoints/best-checkpoint.ckpt \
             
-
 ```
 
 Test:
@@ -59,8 +58,8 @@ tensorboard --logdir=egs/continuous_mnist/categorical_prior/version_11 --port=60
 ```
 
 ``` bash
-tensorboard --logdir=egs/continuous_mnist/categorical_prior_conv/version_1 --port=6006
-tensorboard --logdir=egs/continuous_cifar10/categorical_prior_conv/version_13 --port=6020
+tensorboard --logdir=egs/continuous_mnist/categorical_prior_conv/version_0 --port=6006
+tensorboard --logdir=egs/continuous_cifar10/categorical_prior_conv/version_6 --port=6007
 ```
 
 ## Future development

@@ -235,18 +235,18 @@ class JointModelCategoricalGaussian(BaseJointModel):
     We assume Categorical prior for p(h) and Gaussian likelihood for p(x|h).
     """
 
-    SIGMA = 0.1  # Fixed standard deviation for Gaussian likelihood
-
     def __init__(
         self,
         net: nn.Module,
         num_categories,
         num_latent_vars,
         embedding_dims=None,
+        sigma=0.1,
     ):
         super().__init__()
 
         self.num_latent_vars = num_latent_vars
+        self.register_buffer("sigma", torch.tensor(float(sigma)))
 
         if len(num_categories) == 1 and num_latent_vars > 1:
             self._num_categories = list(num_categories) * num_latent_vars
@@ -343,7 +343,7 @@ class JointModelCategoricalGaussian(BaseJointModel):
             num_samples = mean_x.shape[0] // x.shape[0]
             x = x.repeat_interleave(num_samples, dim=0)  # [N, ...]
 
-        gaussian_dist = torch.distributions.Normal(loc=mean_x, scale=self.SIGMA)
+        gaussian_dist = torch.distributions.Normal(loc=mean_x, scale=self.sigma)
         log_p_x_given_h = gaussian_dist.log_prob(x).sum(
             dim=list(range(1, x.dim()))
         )  # sum over dimensions, shape [N,]
@@ -358,6 +358,7 @@ class JointModelCategoricalGaussian(BaseJointModel):
             x: observed data, shape [B, ...]
             h_new: new latent variables, shape [B, num_samples, ..., num_latent_vars]
             h_old: old latent variables, shape [B, num_samples, ..., num_latent_vars]
+            beta: to scale the difference, controls the sharpness of the distribution
         Returns:
             log_prob_diff: shape [B, num_samples]
         """
@@ -379,7 +380,7 @@ class JointModelCategoricalGaussian(BaseJointModel):
         
         x_expanded = x.unsqueeze(1)
         
-        diff = (mu_new-mu_old)*(x_expanded - 0.5*(mu_new + mu_old))/(self.SIGMA**2)
+        diff =  (mu_new-mu_old)*(x_expanded - 0.5*(mu_new + mu_old))/(self.sigma**2)
         log_prob_diff = diff.sum(dim=list(range(2, diff.dim())))  # sum over dimensions, shape [B, num_samples]
         
         return log_prob_diff  # shape [B, num_samples]
@@ -404,7 +405,7 @@ class JointModelCategoricalGaussian(BaseJointModel):
             h = torch.cat(h_indices, dim=-1)  # shape [1, num_latent_vars]
 
         mean_x = self.forward(h)  # [B, ...]
-        gaussian_dist = torch.distributions.Normal(loc=mean_x, scale=self.SIGMA)
+        gaussian_dist = torch.distributions.Normal(loc=mean_x, scale=self.sigma)
         x_samples = gaussian_dist.sample((num_samples,))  # [num_samples, B, ...]
         x_samples = (
             torch.clamp(x_samples, 0.0, 1.0)
