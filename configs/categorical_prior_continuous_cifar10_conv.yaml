@@ -9,7 +9,6 @@ model:
         num_categories: [1024]
         num_latent_vars: 1
         embedding_dims: [64]
-        sigma: 0.1 # initial sigma for Gaussian likelihood
         net:
           class_path: src.models.components.networks.ConvDecoder
           init_args:
@@ -71,11 +70,29 @@ model:
     init_mode: resume # "resume" or "warm_start"
     init_strict: false
 
-    adaptive_sigma: false
-    target_acceptance_range: [0.5, 0.8]
-    sigma_controller_rate: 0.01
-    sigma_min: 0.01
-    sigma_max: 0.5
+    sigma_controller:
+      _target_: src.utils.controllers.SigmaController
+      mode: scheduled+adaptive
+      init_sigma: 1.0
+      clamp_to_schedule: true
+
+      scheduler:
+        _target_: src.utils.schedulers.StepSigmaScheduler
+        max_val: 1.0
+        min_val: 0.01
+        warmup_steps: 5000
+        total_steps: ${trainer.max_steps} # if using epochs, make sure to set max_epochs in trainer
+        mode: cosine
+
+      adaptive_controller:
+        _target_: src.utils.controllers.ParameterController
+        param_name: mis_sigma
+        target_range: [0.2, 0.5]
+        adjustment_rate: 0.01
+        mode: exponential
+     
+      
+  
 
 data:
   class_path: src.data.cifar10.CIFAR10DataModule
@@ -126,6 +143,7 @@ trainer:
         log_every_n_steps: 1
 
   max_epochs: 400
+  max_steps: 5000 # higher priority than max_epochs
   accelerator: gpu
   devices: [4, 5, 6, 7]
   strategy: ddp_find_unused_parameters_true

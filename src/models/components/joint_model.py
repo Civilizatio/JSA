@@ -285,6 +285,9 @@ class JointModelCategoricalGaussian(BaseJointModel):
 
     def get_last_layer_weight(self):
         return self.net.get_last_layer_weight()
+    
+    def set_sigma(self, sigma):
+        self.sigma.fill_(sigma)
 
     def log_prior_prob(self, h):
         """

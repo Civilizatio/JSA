@@ -11,7 +11,7 @@ from src.utils.codebook_utils import (
     encode_multidim_to_index,
     plot_codebook_usage_distribution,
 )
-from src.utils.controllers import ParameterController
+from src.utils.controllers import ParameterController, SigmaController
 
 from src.models.components.losses import JSAGANLoss
 import math
@@ -34,11 +34,7 @@ class JSA(LightningModule):
         init_from_ckpt: str = None,
         init_mode: str = "resume",  # "resume" or "warm_start"
         init_strict: bool = False,
-        adaptive_sigma: bool = False,
-        target_acceptance_range: tuple = (0.2, 0.5),
-        sigma_controller_rate: float = 0.01,
-        sigma_min: float = 0.01,
-        sigma_max: float = 1.0,
+        sigma_controller=None,
     ):
         super().__init__()
         # self.save_hyperparameters(ignore=["joint_model", "proposal_model", "sampler", "gan_loss"])
@@ -64,19 +60,7 @@ class JSA(LightningModule):
         self.init_strict = init_strict
         self._weights_loaded = False  # guard to ensure weights are loaded only once
 
-        self.adaptive_sigma = adaptive_sigma
-        if self.adaptive_sigma:
-            self.sigma_controller = ParameterController(
-                param_name="mis_sigma",
-                target_range=target_acceptance_range,
-                adjustment_rate=sigma_controller_rate,
-                min_val=sigma_min,
-                max_val=sigma_max,
-                mode="exponential",
-                direction="inverse",
-            )
-        else:
-            self.sigma_controller = None
+        self.sigma_controller: SigmaController | None = sigma_controller
 
         # For visualization during validation
         self.validation_step_outputs = []
@@ -170,6 +154,13 @@ class JSA(LightningModule):
         print("Proposal Model Structure:")
         print(self.proposal_model.net)
 
+        # set sigma for joint model if applicable
+        if self.sigma_controller is not None:
+            init_sigma = self.sigma_controller.sigma
+            if hasattr(self.joint_model, "set_sigma"):
+                self.joint_model.set_sigma(init_sigma)
+                print(f"Initial sigma set to {init_sigma} for joint model.")
+
     def on_train_epoch_start(self):
         if self.current_epoch >= self.cache_start_epoch:
             self.sampler.use_cache = True
@@ -248,33 +239,22 @@ class JSA(LightningModule):
         self.log("train/loss_proposal", loss_proposal, prog_bar=True)
 
     def on_train_batch_end(self, outputs, batch, batch_idx):
-        accept_rate = self.sampler.get_acceptance_rate()
-        self.log("train/mis_acceptance_rate", accept_rate, prog_bar=False)
+        acceptance_rate = self.sampler.get_acceptance_rate()
+        self.log("train/mis_acceptance_rate", acceptance_rate, prog_bar=False)
 
-    def on_train_epoch_end(self):
-        if (
-            self.adaptive_sigma
-            and self.sigma_controller is not None
-            and hasattr(self.joint_model, "sigma")
-        ):
-            current_accept_rate = self.sampler.get_acceptance_rate()
-            current_sigma = self.joint_model.sigma.item()
+        if self.sigma_controller is None:
+            return
 
-            new_sigma, info = self.sigma_controller.step(
-                current_val=current_sigma, metric_val=current_accept_rate
-            )
+        new_sigma, info = self.sigma_controller.step(
+            global_step=self.global_step,
+            acceptance_rate=acceptance_rate,
+        )
+        if hasattr(self.joint_model, "set_sigma"):
+            self.joint_model.set_sigma(new_sigma)
 
-            if info["status"] == "adjusting":
-                self.joint_model.sigma.fill_(new_sigma)
-
-            self.log("train/mis_sigma", new_sigma, prog_bar=True)
-            self.log("train/mis_sigma_diff", info["diff"], prog_bar=False)
-
-            if info["status"] == "adjusting":
-                # print only when adjustment happens
-                print(
-                    f"[Adaptive Sigma] Rate: {current_accept_rate:.4f} (Target: {self.sigma_controller.min_target}-{self.sigma_controller.max_target}), Sigma: {current_sigma:.4f} -> {new_sigma:.4f}"
-                )
+        self.log("train/sigma", new_sigma, prog_bar=True)
+        if "ref_sigma" in info:
+            self.log("train/ref_sigma", info["ref_sigma"], prog_bar=True)
 
     # ========================= Validation =========================
 
