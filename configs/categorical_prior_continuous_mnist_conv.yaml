@@ -9,7 +9,7 @@ model:
         num_categories: [256]
         num_latent_vars: 1
         embedding_dims: [8]
-        sigma: 0.5
+        sigma: 0.01
         net:
           class_path: src.models.components.networks.ConvDecoder
           init_args:

@@ -318,6 +318,24 @@ class JointModelCategoricalGaussian(BaseJointModel):
         )  # [B * num_samples]
         log_probs = log_probs_flat.view(batch_size, num_samples)  # [B, num_samples]
         return log_probs
+    
+    def forward_multiple_samples(self, h):
+        """Compute p(x|h) parameters (mean) for multiple samples of h
+
+        Args:
+            h: latent variables, shape [B, num_samples, ..., num_latent_vars]
+        Returns:
+            mean_x: shape [B, num_samples, ...]
+        """
+        batch_size, num_samples = h.shape[0], h.shape[1]
+        # Flatten first two dimensions to compute forward
+        h_flat = h.reshape(
+            batch_size * num_samples, *h.shape[2:]
+        )  # [B * num_samples, ..., num_latent_vars]
+        mean_x_flat = self.forward(h_flat)  # [B * num_samples, ...]
+        mean_x = mean_x_flat.view(batch_size, num_samples, *mean_x_flat.shape[1:])  # [B, num_samples, ...]
+        return mean_x  # [B, num_samples, ...]
+        
 
     def log_joint_prob(self, x, h):
         """Must compute log p(x, h) = log p(h) + log p(x|h)

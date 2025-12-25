@@ -41,7 +41,7 @@ class MISampler(BaseSampler):
         self.dataset_size = dataset_size
         self.use_cache = use_cache  # use the setter, which initializes cache if needed
         self.element_shape = element_shape
-        self.reset_acceptance_stats() # reset acceptance statistics
+        self.reset_acceptance_stats()  # reset acceptance statistics
 
     @property
     def use_cache(self):
@@ -86,7 +86,7 @@ class MISampler(BaseSampler):
         """Move sampler to device, including cache if present"""
         self._accept_cnt = self._accept_cnt.to(device)
         self._total_cnt = self._total_cnt.to(device)
-        
+
         if self.use_cache:
             self.cache = self.cache.to(device)
             self.updated_mask = self.updated_mask.to(device)
@@ -118,10 +118,13 @@ class MISampler(BaseSampler):
         return h_old  # [B, num_samples, ..., num_latent_vars]
 
     def reset_acceptance_stats(self):
-        self._accept_cnt = torch.zeros(1, device=next(self.proposal_model.parameters()).device)
-        self._total_cnt = torch.zeros(1, device=next(self.proposal_model.parameters()).device)
-    
-    
+        self._accept_cnt = torch.zeros(
+            1, device=next(self.proposal_model.parameters()).device
+        )
+        self._total_cnt = torch.zeros(
+            1, device=next(self.proposal_model.parameters()).device
+        )
+
     @torch.no_grad()
     def _cal_acceptance_prob(self, x, h_new, h_old, h_logits=None):
         """Calculate acceptance probability for MIS step
@@ -202,10 +205,12 @@ class MISampler(BaseSampler):
 
         """
 
-        log_p_diff = self.joint_model.log_joint_prob_diff(x, h_new, h_old) # [B, num_samples]
+        log_p_diff = self.joint_model.log_joint_prob_diff(
+            x, h_new, h_old
+        )  # [B, num_samples]
         log_q_diff = self.proposal_model.log_conditional_prob_diff(
             x, h_new, h_old, h_logits
-        ) # [B, num_samples]
+        )  # [B, num_samples]
         log_accept = log_p_diff - log_q_diff  # [B, num_samples]
         accept_prob = torch.exp(torch.clamp(log_accept, max=0.0, min=-100.0))
         return accept_prob
@@ -243,7 +248,7 @@ class MISampler(BaseSampler):
         accept = (u < accept_prob).float()  # [batch_size, num_samples]
         self._accept_cnt += accept.sum()
         self._total_cnt += accept.numel()
-        
+
         target_shape = accept.shape + (1,) * (h_new.dim() - accept.dim())
         accept = accept.view(
             target_shape
@@ -293,6 +298,11 @@ class MISampler(BaseSampler):
     def _sample_parallel(self, x, idx=None, num_steps=1):
         """Parallelized multi-step sampling for MIS. Generativetes all proposal samples in parallel.
 
+        Fully optimized version of MIS sampling. We use parallel proposal sampling to generate all proposal samples
+        in one forward pass, and generate mean of gaussian joint model in one forward pass.
+
+        The overall complexity is O(num_steps) encoder/decoder forward passes.
+
         Args:
             x: Input data, shape [batch_size, ...].
             idx: Indices for cache, shape [batch_size].
@@ -309,57 +319,75 @@ class MISampler(BaseSampler):
         h_old = self._init_h_old(
             idx, h_new_all[:, 0:1, ...]
         )  # [B, 1, ..., num_latent_vars]
-        
-        use_faster = (
-            self.joint_model.__class__.__name__ == "JointModelCategoricalGaussian"
-            and self.proposal_model.__class__.__name__ == "ProposalModelCategorical"
-        )
-        cal_acceptance_prob_fn = (
-            self._cal_acceptance_prob_faster
-            if use_faster
-            else self._cal_acceptance_prob
-        )
+        h_new_all[:, 0, ...] = h_old[:, 0, ...]  # set the first proposal to h_old
+
+        # Decoder: Batch forward over all candidates
+        mean_all = self.joint_model.forward_multiple_samples(
+            h_new_all
+        )  # [B, num_steps+1, ...]
+
+        # log p(x|h) for all candidates
+        x_expanded = x.unsqueeze(1).expand_as(mean_all)  # [B, num_steps+1, ...]
+        sq_err = (x_expanded - mean_all) ** 2  # [B, num_steps+1, ...]
+        log_p_x_given_h_all = (
+            -0.5
+            * torch.sum(sq_err, dim=tuple(range(2, x_expanded.dim())))
+            / (self.joint_model.sigma**2)
+        )  # [B, num_steps+1]
+
+        # log q(h|x) for all candidates
+        log_q_h_given_x_all = self.proposal_model.log_prob_from_logits(
+            h_new_all, h_logits
+        )  # [B, num_steps+1]
+
+        # Initialize current indices
+        cur_idx = torch.zeros(
+            x.shape[0], dtype=torch.long, device=x.device
+        )  # [B, ], current index in h_new_all for each sample
 
         # Sequentially compute acceptance probabilities and update samples
         for step in range(num_steps):
-            h_new = h_new_all[
-                :, step + 1 : step + 2, ...
-            ]  # [B, 1, ..., num_latent_vars]
-            accept_prob = cal_acceptance_prob_fn(
-                x, h_new, h_old, h_logits=h_logits
-            )  # [B, 1]
-            u = torch.rand_like(accept_prob)
-            accept = (u < accept_prob).float()  # [B, 1]
-            
+            prob_idx = torch.full_like(
+                cur_idx, step + 1
+            )  # [B, ], index of proposed samples
+
+            log_r = (
+                log_p_x_given_h_all.gather(1, prob_idx.unsqueeze(1)).squeeze(1)
+                - log_p_x_given_h_all.gather(1, cur_idx.unsqueeze(1)).squeeze(1)
+                + log_q_h_given_x_all.gather(1, cur_idx.unsqueeze(1)).squeeze(1)
+                - log_q_h_given_x_all.gather(1, prob_idx.unsqueeze(1)).squeeze(1)
+            )  # [B, ]
+
+            accept = torch.rand_like(log_r) < torch.exp(
+                torch.clamp(log_r, max=0.0, min=-100.0)
+            )  # [B, ]
+
             self._accept_cnt += accept.sum()
             self._total_cnt += accept.numel()
 
-            target_shape = accept.shape + (1,) * (h_new.dim() - accept.dim())
-            accept = accept.view(target_shape)  # reshape for broadcasting
+            cur_idx = torch.where(accept, prob_idx, cur_idx)  # update current indices
 
-            # Update sample
-            h_next = (
-                accept * h_new + (1 - accept) * h_old
-            )  # [B, 1, ..., num_latent_vars]
-            h_next = h_next.round()  # Avoid numerical issues
-            h_old = h_next  # Update h_old for next step
+        # Gather final samples
+        h_final = h_new_all.gather(
+            1,
+            cur_idx.view(-1, 1, *([1] * (h_new_all.dim() - 2))).expand(
+                -1, 1, *h_new_all.shape[2:]
+            ),
+        )  # [B, 1, ..., num_latent_vars]
 
         if self.use_cache and idx is not None:
             # Update cache with the final samples
-            h_next_selected = h_old[
-                :, 0, ...
-            ]  # [batch_size, ..., num_latent_vars], single sample
-            self.cache[idx] = h_next_selected.detach().long()
+            self.cache[idx] = h_final.squeeze(1).detach().long()
             self.updated_mask[idx] = True  # mark as updated
 
-        return h_old
-    
+        return h_final  # [B, 1, ..., num_latent_vars]
+
     @torch.no_grad()
     def get_acceptance_rate(self):
-        
+
         accept = self._accept_cnt.clone()
         total = self._total_cnt.clone()
-        
+
         if dist.is_available() and dist.is_initialized():
             dist.all_reduce(accept, op=dist.ReduceOp.SUM)
             dist.all_reduce(total, op=dist.ReduceOp.SUM)
