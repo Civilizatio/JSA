@@ -9,7 +9,7 @@ model:
         num_categories: [256]
         num_latent_vars: 1
         embedding_dims: [8]
-        sigma: 0.1
+        sigma: 0.5
         net:
           class_path: src.models.components.networks.ConvDecoder
           init_args:
@@ -68,7 +68,7 @@ model:
     cache_start_epoch: 300
 
     init_from_ckpt: null
-    init_mode: resume # "resume" or "warm_start"
+    init_mode: "warm_start" # "resume" or "warm_start"
     init_strict: false
 
     adaptive_sigma: false

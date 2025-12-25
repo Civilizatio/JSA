@@ -61,6 +61,7 @@ tensorboard --logdir=egs/continuous_mnist/categorical_prior/version_11 --port=60
 tensorboard --logdir=egs/continuous_mnist/categorical_prior_conv/version_0 --port=6006
 tensorboard --logdir=egs/continuous_cifar10/categorical_prior_conv/version_6 --port=6007
 ```
+tensorboard --logdir=egs/continuous_mnist/categorical_prior_conv/base_version --port=6010
 
 ## Future development
 
