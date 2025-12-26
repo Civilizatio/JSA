@@ -242,10 +242,12 @@ class JointModelCategoricalGaussian(BaseJointModel):
         num_latent_vars,
         embedding_dims=None,
         sigma=0.1,
+        sample_chunk_size=8,
     ):
         super().__init__()
 
         self.num_latent_vars = num_latent_vars
+        self.sample_chunk_size = sample_chunk_size # for sampling in chunks to save memory
         self.register_buffer("sigma", torch.tensor(float(sigma)))
 
         if len(num_categories) == 1 and num_latent_vars > 1:
@@ -312,15 +314,33 @@ class JointModelCategoricalGaussian(BaseJointModel):
             log_probs: shape [B, num_samples]
         """
         batch_size, num_samples = h.shape[0], h.shape[1]
+        
+        # Methods below may cause OOM for large num_samples, so we do chunking
         # Flatten first two dimensions to compute log_joint_prob
-        h_flat = h.reshape(
-            batch_size * num_samples, *h.shape[2:]
-        )  # [B * num_samples, ..., num_latent_vars]
-        log_probs_flat = self.log_joint_prob(
-            x.repeat_interleave(num_samples, dim=0), h_flat
-        )  # [B * num_samples]
-        log_probs = log_probs_flat.view(batch_size, num_samples)  # [B, num_samples]
-        return log_probs
+        # h_flat = h.reshape(
+        #     batch_size * num_samples, *h.shape[2:]
+        # )  # [B * num_samples, ..., num_latent_vars]
+        # log_probs_flat = self.log_joint_prob(
+        #     x.repeat_interleave(num_samples, dim=0), h_flat
+        # )  # [B * num_samples]
+        # log_probs = log_probs_flat.view(batch_size, num_samples)  # [B, num_samples]
+        
+        log_probs_list = []
+        for i in range(0, num_samples, self.sample_chunk_size):
+            chunk_size = min(self.sample_chunk_size, num_samples - i)
+            h_chunk = h[:, i : i + chunk_size, ...]  # [B, chunk_size, ..., num_latent_vars]
+            h_chunk_flat = h_chunk.reshape(
+                batch_size * chunk_size, *h_chunk.shape[2:]
+            )  # [B * chunk_size, ..., num_latent_vars]
+            x_expanded = x.repeat_interleave(chunk_size, dim=0)  # [B * chunk_size, ...]
+            log_probs_chunk_flat = self.log_joint_prob(
+                x_expanded, h_chunk_flat
+            )  # [B * chunk_size]
+            log_probs_chunk = log_probs_chunk_flat.view(batch_size, chunk_size)  # [B, chunk_size]
+            log_probs_list.append(log_probs_chunk)
+        
+        log_probs = torch.cat(log_probs_list, dim=1)  # [B, num_samples]
+        return log_probs # [B, num_samples]
     
     def forward_multiple_samples(self, h):
         """Compute p(x|h) parameters (mean) for multiple samples of h
@@ -331,12 +351,30 @@ class JointModelCategoricalGaussian(BaseJointModel):
             mean_x: shape [B, num_samples, ...]
         """
         batch_size, num_samples = h.shape[0], h.shape[1]
-        # Flatten first two dimensions to compute forward
+        
+        # Methods below may cause OOM for large num_samples, so we do chunking
+        # # Flatten first two dimensions to compute forward
         h_flat = h.reshape(
             batch_size * num_samples, *h.shape[2:]
         )  # [B * num_samples, ..., num_latent_vars]
         mean_x_flat = self.forward(h_flat)  # [B * num_samples, ...]
         mean_x = mean_x_flat.view(batch_size, num_samples, *mean_x_flat.shape[1:])  # [B, num_samples, ...]
+        
+        # Chunking to save memory
+        # outputs = []
+        # for i in range(0, num_samples, self.sample_chunk_size):
+        #     h_chunk = h[:, i : i + self.sample_chunk_size, ...]  # [B, chunk_size, ..., num_latent_vars]
+        #     chunk_size = h_chunk.shape[1]
+        #     h_chunk_flat = h_chunk.reshape(
+        #         batch_size * chunk_size, *h_chunk.shape[2:]
+        #     )  # [B * chunk_size, ..., num_latent_vars]
+        #     mean_x_chunk_flat = self.forward(h_chunk_flat)  # [B * chunk_size, ...]
+        #     mean_x_chunk = mean_x_chunk_flat.view(
+        #         batch_size, chunk_size, *mean_x_chunk_flat.shape[1:]
+        #     )  # [B, chunk_size, ...]
+        #     outputs.append(mean_x_chunk)
+        
+        # mean_x = torch.cat(outputs, dim=1)  # [B, num_samples, ...]
         return mean_x  # [B, num_samples, ...]
         
 
@@ -448,37 +486,54 @@ class JointModelCategoricalGaussian(BaseJointModel):
         mean_x = self.forward(h)  # [B, ...]
         return mean_x  # [B, output_dim]
 
-    def get_loss(self, x, h, return_forward=False):
+    def get_loss(self, x, h, return_forward=False, backward_fn=None):
         """Compute negative log joint probability as loss
 
         Args:
             x: observed data, shape [B, ...]
-            h: latent variables, shape [N, ..., num_latent_vars]
-                if there are multiple samples, whose shape is [B, num_samples, ..., num_latent_vars], you
-                should flatten the first two dimensions before passing in.
-                So, N = B * num_samples in that case.
-            return_forward: whether to return the forward output (mean_x)
+            h: latent variables, shape [B, num_samples, ..., num_latent_vars]
+            return_forward: whether to return the forward output (mean_x), 
+                            if multiple samples are used, only return the last sample's output
+            backward_fn: optional backward function to apply gradients
 
         Returns:
             loss: negative log joint probability
             mean_x: decoded observed data, shape [N, ...] (only if return_forward is True)
         """
 
-        mean_x = self.forward(h)  # [N, ...]
-        if x.shape[0] != mean_x.shape[0]:  # multiple samples case
-            x = x.repeat_interleave(mean_x.shape[0] // x.shape[0], dim=0)  # [N, ...]
-
-        # Using MSE loss as negative log likelihood
-        mse_loss = nn.MSELoss(reduction="mean")
-        log_p_x_given_h = -mse_loss(mean_x, x)  # scalar
-        log_joint = log_p_x_given_h
+        # mean_x = self.forward_multiple_samples(h)  # [B, num_samples, ...]
+        # x = x.unsqueeze(1)  # [B, 1, ...], broadcast to [B, num_samples, ...]
+        batch_size, num_samples = h.shape[0], h.shape[1]
+        mse = torch.nn.MSELoss(reduction="mean")
+        total_loss = 0.0
         if return_forward:
-            return (
-                -log_joint.mean(),
-                mean_x,
-            )  # negative log joint probability and forward output
+            mean_x_last = None
+        
+        for i in range(0, num_samples, self.sample_chunk_size):
+            chunk_size = min(self.sample_chunk_size, num_samples - i)
+            h_chunk = h[:, i : i + chunk_size, ...]  # [B, chunk_size, ..., num_latent_vars]
+            mean_x_chunk = self.forward_multiple_samples(h_chunk)  # [B, chunk_size, ...]
+            
+            
+            x_expanded = x.unsqueeze(1).expand_as(mean_x_chunk)  # [B, chunk_size, ...]
+            loss_chunk = mse(mean_x_chunk, x_expanded)
+            
+            # backward if function provided
+            if backward_fn is not None:
+                backward_fn(loss_chunk)
+                
+            total_loss += loss_chunk.detach() * chunk_size  # sum up the loss chunks weighted by chunk size
         else:
-            return -log_joint.mean()  # negative log joint probability
+            if return_forward and mean_x_last is None:
+                mean_x_last = mean_x_chunk[:, -1:, ...]  # last sample in the last chunk, shape [B, 1, ...]
+            
+        total_loss = total_loss / num_samples  # average over all samples 
+        
+        if return_forward:
+            return total_loss, mean_x_last.squeeze(1)
+        else:
+            return total_loss
+            
 
     def forward(self, h):
         """Decode x ~ p(x|h)

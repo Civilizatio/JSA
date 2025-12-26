@@ -185,8 +185,8 @@ class JSA(LightningModule):
 
         # MISampling step
         h = self.sampler.sample(
-            x, idx=idx, num_steps=self.num_mis_steps
-        )  # [B, 1, ..., num_latent_vars]
+            x, idx=idx, num_steps=self.num_mis_steps, parallel=True, return_all=True
+        )  # [B, num_samples, ..., num_latent_vars]
 
         # Optimizers
         if self.gan_loss is not None:
@@ -199,9 +199,9 @@ class JSA(LightningModule):
         # Update joint model
         opt_joint.zero_grad()
         nll_loss, x_hat = self.joint_model.get_loss(
-            x, h.squeeze(1), return_forward=True
+            x, h, return_forward=True, backward_fn=self.manual_backward
         )
-        total_loss_joint = nll_loss
+        total_loss_joint = nll_loss # only for logging
         if self.gan_loss is not None:
 
             last_layer = (
@@ -212,7 +212,7 @@ class JSA(LightningModule):
 
             g_loss, g_log = self.gan_loss(
                 inputs=x,
-                reconstructions=x_hat,
+                reconstructions=x_hat,  # [B, C, H, W]
                 optimizer_idx=0,
                 global_step=self.global_step,
                 last_layer=last_layer,
@@ -220,9 +220,9 @@ class JSA(LightningModule):
                 split="train",
             )
             total_loss_joint = total_loss_joint + g_loss
+            self.manual_backward(g_loss)
             self.log_dict(g_log, prog_bar=False)
 
-        self.manual_backward(total_loss_joint)
         opt_joint.step()
 
         # Update proposal model

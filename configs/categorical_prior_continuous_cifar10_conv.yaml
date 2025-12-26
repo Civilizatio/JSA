@@ -9,6 +9,7 @@ model:
         num_categories: [1024]
         num_latent_vars: 1
         embedding_dims: [64]
+        sample_chunk_size: 8
         net:
           class_path: src.models.components.networks.ConvDecoder
           init_args:
@@ -130,7 +131,6 @@ trainer:
         save_top_k: -1 # save all checkpoints
         filename: last-checkpoint
         every_n_epochs: 1
-        dirpath: ./egs/continuous_mnist/categorical_prior/version_3/checkpoints
     - class_path: lightning.pytorch.callbacks.LearningRateMonitor
       init_args:
         logging_interval: step

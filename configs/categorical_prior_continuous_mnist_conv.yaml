@@ -9,6 +9,7 @@ model:
         num_categories: [256]
         num_latent_vars: 1
         embedding_dims: [8]
+        sample_chunk_size: 1
         net:
           class_path: src.models.components.networks.ConvDecoder
           init_args:
@@ -80,7 +81,7 @@ model:
         _target_: src.utils.schedulers.SigmaScheduler
         max_val: 0.2
         min_val: 0.05
-        warmup_steps: 2000
+        warmup_steps: 1000
         total_steps: 5000 # if using epochs, make sure to set max_epochs in trainer
         mode: cosine
 
@@ -127,7 +128,6 @@ trainer:
         save_top_k: -1 # save all checkpoints
         filename: last-checkpoint
         every_n_epochs: 1
-        dirpath: ./egs/continuous_mnist/categorical_prior/version_3/checkpoints
     - class_path: lightning.pytorch.callbacks.LearningRateMonitor
       init_args:
         logging_interval: step

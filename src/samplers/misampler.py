@@ -272,7 +272,7 @@ class MISampler(BaseSampler):
         return h_next
 
     @torch.no_grad()
-    def sample(self, x, idx=None, num_steps=1, parallel=False):
+    def sample(self, x, idx=None, num_steps=1, parallel=False, return_all=False):
         """Generate samples using MIS sampler.
 
 
@@ -286,8 +286,9 @@ class MISampler(BaseSampler):
         #     )
 
         if parallel:
-            return self._sample_parallel(x, idx=idx, num_steps=num_steps)
+            return self._sample_parallel(x, idx=idx, num_steps=num_steps, return_all=return_all)
         else:
+            assert not return_all, "return_all is only supported in parallel sampling."
             h_old = None
             for _ in range(num_steps):
                 h_old = self.step(x, idx=idx, h_old=h_old)
@@ -295,7 +296,7 @@ class MISampler(BaseSampler):
         return h_old
 
     @torch.no_grad()
-    def _sample_parallel(self, x, idx=None, num_steps=1):
+    def _sample_parallel(self, x, idx=None, num_steps=1, return_all=False):
         """Parallelized multi-step sampling for MIS. Generativetes all proposal samples in parallel.
 
         Fully optimized version of MIS sampling. We use parallel proposal sampling to generate all proposal samples
@@ -307,6 +308,9 @@ class MISampler(BaseSampler):
             x: Input data, shape [batch_size, ...].
             idx: Indices for cache, shape [batch_size].
             num_steps: Number of sampling steps.
+            return_all: Whether to return all intermediate samples.
+                        If True, returns tensor of shape [batch_size, num_steps+1, ..., num_latent_vars].
+                        If False, returns only the final samples of shape [batch_size, 1, ..., num_latent_vars].
         Returns:
             h_final: Final sampled latent variables, shape [batch_size, latent_dim].
         """
@@ -344,6 +348,9 @@ class MISampler(BaseSampler):
         cur_idx = torch.zeros(
             x.shape[0], dtype=torch.long, device=x.device
         )  # [B, ], current index in h_new_all for each sample
+        
+        if return_all:
+            traj_idxes = [] # length should be `num_steps`
 
         # Sequentially compute acceptance probabilities and update samples
         for step in range(num_steps):
@@ -366,21 +373,36 @@ class MISampler(BaseSampler):
             self._total_cnt += accept.numel()
 
             cur_idx = torch.where(accept, prob_idx, cur_idx)  # update current indices
+            if return_all:
+                traj_idxes.append(cur_idx.clone())
 
         # Gather final samples
-        h_final = h_new_all.gather(
-            1,
-            cur_idx.view(-1, 1, *([1] * (h_new_all.dim() - 2))).expand(
-                -1, 1, *h_new_all.shape[2:]
-            ),
-        )  # [B, 1, ..., num_latent_vars]
+        if return_all:
+            traj_idxes = torch.stack(traj_idxes, dim=1)  # [B, num_steps+1]
+            h_result = h_new_all.gather(
+                1,
+                traj_idxes.view(x.shape[0], num_steps, *([1] * (h_new_all.dim() - 2))).expand(
+                    -1, -1, *h_new_all.shape[2:]
+                ),
+            )  # [B, num_steps, ..., num_latent_vars]
+            
+            h_final = h_result[:, -1:, ...]  # [B, 1, ..., num_latent_vars]
+        else:
+        
+            h_result = h_new_all.gather(
+                1,
+                cur_idx.view(-1, 1, *([1] * (h_new_all.dim() - 2))).expand(
+                    -1, 1, *h_new_all.shape[2:]
+                ),
+            )  # [B, 1, ..., num_latent_vars]
+            h_final = h_result  # [B, 1, ..., num_latent_vars]
 
         if self.use_cache and idx is not None:
             # Update cache with the final samples
             self.cache[idx] = h_final.squeeze(1).detach().long()
             self.updated_mask[idx] = True  # mark as updated
 
-        return h_final  # [B, 1, ..., num_latent_vars]
+        return h_result  # [B, 1 or num_steps, ..., num_latent_vars]
 
     @torch.no_grad()
     def get_acceptance_rate(self):
