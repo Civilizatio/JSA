@@ -11,12 +11,12 @@ from src.utils.codebook_utils import (
     encode_multidim_to_index,
     plot_codebook_usage_distribution,
 )
-from src.utils.controllers import ParameterController, SigmaController
+from src.utils.controllers import SigmaController
+from src.utils.file_logger import get_file_logger
 
 from src.models.components.losses import JSAGANLoss
 import math
-import numpy as np
-import matplotlib.pyplot as plt
+
 
 
 class JSA(LightningModule):
@@ -60,8 +60,12 @@ class JSA(LightningModule):
         self.init_strict = init_strict
         self._weights_loaded = False  # guard to ensure weights are loaded only once
 
-        self.sigma_controller: SigmaController | None = sigma_controller
+        self.sigma_controller: SigmaController | None = instantiate(
+            sigma_controller
+        ) if sigma_controller is not None else None
 
+        self.train_logger = None # Not initialized yet
+        
         # For visualization during validation
         self.validation_step_outputs = []
 
@@ -78,6 +82,12 @@ class JSA(LightningModule):
         warm_start: load model weights but not optimizer states
 
         """
+        log_dir = self.trainer.logger.log_dir
+        self.train_logger = get_file_logger(
+            log_path=f"{log_dir}/train.log", name="train_logger"
+        )
+        
+        
         if self.init_from_ckpt is None or self._weights_loaded:
             return
 
@@ -92,7 +102,7 @@ class JSA(LightningModule):
             ckpt["state_dict"], strict=self.init_strict
         )
         if missing or unexpected:
-            print(
+            self.train_logger.warning(
                 f"While loading weights from '{self.init_from_ckpt}', missing keys: {missing}, unexpected keys: {unexpected}"
             )
 
@@ -112,7 +122,7 @@ class JSA(LightningModule):
             for optimizer in optimizers:
                 optimizer.state = {}
 
-        print(
+        self.train_logger.info(
             f"Model weights loaded from '{self.init_from_ckpt}' with mode '{self.init_mode}'."
         )
         self._weights_loaded = True
@@ -149,17 +159,17 @@ class JSA(LightningModule):
     def on_train_start(self):
 
         # print model structure
-        print("Joint Model Structure:")
-        print(self.joint_model.net)
-        print("Proposal Model Structure:")
-        print(self.proposal_model.net)
+        self.train_logger.info("Joint Model Structure:")
+        self.train_logger.info(self.joint_model.net)
+        self.train_logger.info("Proposal Model Structure:")
+        self.train_logger.info(self.proposal_model.net)
 
         # set sigma for joint model if applicable
         if self.sigma_controller is not None:
             init_sigma = self.sigma_controller.sigma
             if hasattr(self.joint_model, "set_sigma"):
                 self.joint_model.set_sigma(init_sigma)
-                print(f"Initial sigma set to {init_sigma} for joint model.")
+                self.train_logger.info(f"Initial sigma set to {init_sigma} for joint model.")
 
     def on_train_epoch_start(self):
         if self.current_epoch >= self.cache_start_epoch:
@@ -455,16 +465,3 @@ class JSA(LightningModule):
                 # but ensure everyone has the same in distributed environment
                 self.sampler.sync_cache()
 
-    # @classmethod
-    # def load_model(cls, config_path: str, checkpoint_path: str, device: str = "cpu"):
-    #     """Load model from config and checkpoint paths"""
-    #     from omegaconf import OmegaConf
-
-    #     config = OmegaConf.load(config_path)
-    #     model = instantiate(config.model)
-    #     ckpt = torch.load(checkpoint_path, map_location=device)
-    #     model.load_state_dict(ckpt["state_dict"])
-    #     # model = cls.load_from_checkpoint(checkpoint_path, **config.model.init_args)
-    #     model.to(device)
-    #     model.sampler.to(device)
-    #     return model.eval()

@@ -72,16 +72,16 @@ model:
 
     sigma_controller:
       _target_: src.utils.controllers.SigmaController
-      mode: scheduled+adaptive
-      init_sigma: 1.0
+      mode: scheduled # scheduled, adaptive, scheduled+adaptive, fixed
+      init_sigma: 0.2
       clamp_to_schedule: true
 
       scheduler:
-        _target_: src.utils.schedulers.StepSigmaScheduler
-        max_val: 1.0
-        min_val: 0.01
-        warmup_steps: 5000
-        total_steps: ${trainer.max_steps} # if using epochs, make sure to set max_epochs in trainer
+        _target_: src.utils.schedulers.SigmaScheduler
+        max_val: 0.2
+        min_val: 0.05
+        warmup_steps: 2000
+        total_steps: 5000 # if using epochs, make sure to set max_epochs in trainer
         mode: cosine
 
       adaptive_controller:
@@ -94,7 +94,7 @@ model:
 data:
   class_path: src.data.mnist.MNISTDataModule
   init_args:
-    root: ./data
+    root: ./data/mnist
     batch_size: 500
     num_workers: 4
 
@@ -140,6 +140,7 @@ trainer:
         log_every_n_steps: 1
 
   max_epochs: 200
+  max_steps: 5000
   accelerator: gpu
   devices: [4, 5, 6, 7]
   strategy: ddp_find_unused_parameters_true

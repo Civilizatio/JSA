@@ -1,0 +1,183 @@
+# lightning.pytorch==2.5.6
+seed_everything: 42
+trainer:
+  accelerator: gpu
+  strategy: ddp_find_unused_parameters_true
+  devices:
+  - 4
+  - 5
+  - 6
+  - 7
+  num_nodes: 1
+  precision: 32
+  logger:
+    class_path: lightning.pytorch.loggers.tensorboard.TensorBoardLogger
+    init_args:
+      save_dir: ./egs/continuous_cifar10
+      name: categorical_prior_conv
+      version: null
+      log_graph: false
+      default_hp_metric: true
+      prefix: ''
+      sub_dir: null
+      comment: ''
+      purge_step: null
+      max_queue: 10
+      flush_secs: 120
+      filename_suffix: ''
+  callbacks:
+  - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+    init_args:
+      dirpath: null
+      filename: best-checkpoint
+      monitor: valid/nll
+      verbose: false
+      save_last: null
+      save_top_k: 1
+      save_on_exception: false
+      save_weights_only: false
+      mode: min
+      auto_insert_metric_name: true
+      every_n_train_steps: null
+      train_time_interval: null
+      every_n_epochs: null
+      save_on_train_epoch_end: null
+      enable_version_counter: true
+  - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+    init_args:
+      dirpath: ./egs/continuous_mnist/categorical_prior/version_3/checkpoints
+      filename: last-checkpoint
+      monitor: null
+      verbose: false
+      save_last: null
+      save_top_k: -1
+      save_on_exception: false
+      save_weights_only: false
+      mode: min
+      auto_insert_metric_name: true
+      every_n_train_steps: null
+      train_time_interval: null
+      every_n_epochs: 1
+      save_on_train_epoch_end: null
+      enable_version_counter: true
+  - class_path: lightning.pytorch.callbacks.LearningRateMonitor
+    init_args:
+      logging_interval: step
+      log_momentum: false
+      log_weight_decay: false
+  - class_path: lightning.pytorch.callbacks.ModelSummary
+    init_args:
+      max_depth: 2
+  - class_path: src.utils.grad_norm_callback.GradientNormCallback
+    init_args:
+      norm_type: 2
+      log_every_n_steps: 1
+  fast_dev_run: false
+  max_epochs: 400
+  min_epochs: null
+  max_steps: -1
+  min_steps: null
+  max_time: null
+  limit_train_batches: null
+  limit_val_batches: null
+  limit_test_batches: null
+  limit_predict_batches: null
+  overfit_batches: 0.0
+  val_check_interval: null
+  check_val_every_n_epoch: 1
+  num_sanity_val_steps: null
+  log_every_n_steps: 25
+  enable_checkpointing: null
+  enable_progress_bar: true
+  enable_model_summary: null
+  accumulate_grad_batches: 1
+  gradient_clip_val: null
+  gradient_clip_algorithm: null
+  deterministic: null
+  benchmark: null
+  inference_mode: true
+  use_distributed_sampler: true
+  profiler: null
+  detect_anomaly: false
+  barebones: false
+  plugins: null
+  sync_batchnorm: false
+  reload_dataloaders_every_n_epochs: 0
+  default_root_dir: null
+  model_registry: null
+model:
+  class_path: src.models.jsa.JSA
+  init_args:
+    joint_model:
+      class_path: src.models.components.joint_model.JointModelCategoricalGaussian
+      init_args:
+        net:
+          class_path: src.models.components.networks.ConvDecoder
+          init_args:
+            ch: 64
+            out_ch: 3
+            ch_mult:
+            - 1
+            - 2
+            - 4
+            num_res_blocks: 2
+            attn_resolutions: []
+            dropout: 0.0
+            activation: swish
+            norm_type: group
+            resamp_with_conv: true
+            in_channels: null
+            resolution: 32
+            z_channels: 12
+            final_activation: tanh
+        num_categories:
+        - 1024
+        num_latent_vars: 1
+        embedding_dims:
+        - 12
+    proposal_model:
+      class_path: src.models.components.proposal_model.ProposalModelCategorical
+      init_args:
+        net:
+          class_path: src.models.components.networks.ConvEncoder
+          init_args:
+            ch: 64
+            out_ch: null
+            ch_mult:
+            - 1
+            - 2
+            - 4
+            num_res_blocks: 2
+            attn_resolutions: []
+            activation: swish
+            norm_type: group
+            dropout: 0.0
+            resamp_with_conv: true
+            in_channels: 3
+            resolution: 32
+            z_channels: 1024
+        num_latent_vars: 1
+        num_categories:
+        - 1024
+    sampler:
+      _target_: src.samplers.misampler.MISampler
+      use_cache: false
+      dataset_size: 50000
+      element_shape:
+      - 8
+      - 8
+    gan_loss: null
+    lr_joint: 0.0003
+    lr_proposal: 0.0003
+    lr_discriminator: 0.0001
+    num_mis_steps: 20
+    cache_start_epoch: 200
+data:
+  class_path: src.data.cifar10.CIFAR10DataModule
+  init_args:
+    root: ./data/cifar10
+    batch_size: 450
+    num_workers: 4
+optimizer: null
+lr_scheduler: null
+ckpt_path: ./egs/continuous_cifar10/categorical_prior_conv/version_0/checkpoints/best-checkpoint.ckpt
