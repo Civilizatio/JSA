@@ -8,8 +8,8 @@ model:
       init_args:
         num_categories: [1024]
         num_latent_vars: 1
-        embedding_dims: [64]
-        sample_chunk_size: 8
+        embedding_dims: [12]
+        sample_chunk_size: 1
         net:
           class_path: src.models.components.networks.ConvDecoder
           init_args:
@@ -25,7 +25,7 @@ model:
             resamp_with_conv: true
             in_channels: null # not used in decoder
             resolution: 32
-            z_channels: 64 # should calculated based on embedding_dims and num_latent_vars
+            z_channels: 12 # should calculated based on embedding_dims and num_latent_vars
     proposal_model:
       class_path: src.models.components.proposal_model.ProposalModelCategorical
       init_args:
@@ -73,16 +73,16 @@ model:
 
     sigma_controller:
       _target_: src.utils.controllers.SigmaController
-      mode: scheduled+adaptive
-      init_sigma: 1.0
+      mode: scheduled
+      init_sigma: 0.2
       clamp_to_schedule: true
 
       scheduler:
         _target_: src.utils.schedulers.SigmaScheduler
-        max_val: 1.0
+        max_val: 0.2
         min_val: 0.01
         warmup_steps: 5000
-        total_steps: ${trainer.max_steps} # if using epochs, make sure to set max_epochs in trainer
+        total_steps: 20000 # if using epochs, make sure to set max_epochs in trainer
         mode: cosine
 
       adaptive_controller:
@@ -92,8 +92,6 @@ model:
         adjustment_rate: 0.01
         mode: exponential
      
-      
-  
 
 data:
   class_path: src.data.cifar10.CIFAR10DataModule
@@ -120,17 +118,7 @@ trainer:
         save_top_k: 1
         filename: best-checkpoint
         save_last: true
-    # - class_path: lightning.pytorch.callbacks.EarlyStopping # 不使用早停
-    #   init_args:
-    #     monitor: valid/nll
-    #     mode: min
-    #     patience: 10
-
-    - class_path: lightning.pytorch.callbacks.ModelCheckpoint
-      init_args:
-        save_top_k: -1 # save all checkpoints
-        filename: last-checkpoint
-        every_n_epochs: 1
+ 
     - class_path: lightning.pytorch.callbacks.LearningRateMonitor
       init_args:
         logging_interval: step
@@ -143,7 +131,7 @@ trainer:
         log_every_n_steps: 1
 
   max_epochs: 400
-  max_steps: 5000 # higher priority than max_epochs
+  max_steps: 20000 # higher priority than max_epochs
   accelerator: gpu
   devices: [4, 5, 6, 7]
   strategy: ddp_find_unused_parameters_true

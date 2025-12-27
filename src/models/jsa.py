@@ -84,7 +84,7 @@ class JSA(LightningModule):
         """
         log_dir = self.trainer.logger.log_dir
         self.train_logger = get_file_logger(
-            log_path=f"{log_dir}/train.log", name="train_logger"
+            log_path=f"{log_dir}/train.log", name="train_logger", rank=self.trainer.global_rank
         )
         
         

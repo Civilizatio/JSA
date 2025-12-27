@@ -81,8 +81,8 @@ model:
         _target_: src.utils.schedulers.SigmaScheduler
         max_val: 0.2
         min_val: 0.05
-        warmup_steps: 1000
-        total_steps: 5000 # if using epochs, make sure to set max_epochs in trainer
+        warmup_steps: 2000
+        total_steps: 10000 # if using epochs, make sure to set max_epochs in trainer
         mode: cosine
 
       adaptive_controller:
@@ -107,9 +107,6 @@ trainer:
       name: categorical_prior_conv
 
   callbacks:
-    # - class_path: src.utils.redirect_print_callback.RedirectPrintCallback
-    #   init_args:
-    #     filename: training.log
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
         monitor: valid/nll
@@ -117,17 +114,6 @@ trainer:
         save_top_k: 1
         filename: best-checkpoint
         save_last: true
-    # - class_path: lightning.pytorch.callbacks.EarlyStopping # 不使用早停
-    #   init_args:
-    #     monitor: valid/nll
-    #     mode: min
-    #     patience: 10
-
-    - class_path: lightning.pytorch.callbacks.ModelCheckpoint
-      init_args:
-        save_top_k: -1 # save all checkpoints
-        filename: last-checkpoint
-        every_n_epochs: 1
     - class_path: lightning.pytorch.callbacks.LearningRateMonitor
       init_args:
         logging_interval: step
@@ -140,7 +126,7 @@ trainer:
         log_every_n_steps: 1
 
   max_epochs: 200
-  max_steps: 5000
+  max_steps: 10000
   accelerator: gpu
   devices: [4, 5, 6, 7]
   strategy: ddp_find_unused_parameters_true
