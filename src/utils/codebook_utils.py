@@ -4,6 +4,7 @@ import math
 from typing import List, Union
 import numpy as np
 import matplotlib.pyplot as plt
+import torchvision
 
 
 def compute_category_weights(
@@ -102,8 +103,19 @@ def decode_index_to_multidim(
         return out.squeeze(0)  # return [K]
     return out  # [B, K]
 
+def save_images_grid(images, save_path, nrow=None):
+    # images: [B, C, H, W] in range [-1, 1]
+    # Denormalize to [0, 1]
+   
+    img_vis = torch.clamp(images, 0, 1)
+    
+    if nrow is None:
+        nrow = int(np.sqrt(images.shape[0]))
+    
+    grid = torchvision.utils.make_grid(img_vis, nrow=nrow, padding=2)
+    torchvision.utils.save_image(grid, save_path)
 
-def save_images_grid(
+def save_images_grid_(
     images,
     save_path=None,
     tag_prefix="",
@@ -195,12 +207,11 @@ def save_images_grid(
 def plot_codebook_usage_distribution(
     codebook_counter,
     codebook_size,
-    used_codewords,
-    utilization_rate,
     tag_prefix="",
     save_path=None,
     sort_by_counter=False,
     save_to_disk=True,
+    use_log_scale=True,
 ):
     """
     Plot codebook usage distribution and return a dictionary of figures.
@@ -208,47 +219,56 @@ def plot_codebook_usage_distribution(
     Args:
         codebook_counter: Counter array recording usage count for each codeword.
         codebook_size: Total size of the codebook.
-        used_codewords: Number of codewords that were used.
-        utilization_rate: Codebook utilization rate (percentage).
         tag_prefix: Prefix for figure tags in the returned dictionary.
         save_path: Path to save the plot (if save_to_disk is True).
         sort_by_counter: Whether to sort by count in descending order.
         save_to_disk: Whether to save the plot to disk (default: True).
+        use_log_scale: Whether to use logarithmic scale for y-axis (default: True).
 
     Returns:
-        A dictionary of {name: fig} where `name` is the tag and `fig` is the matplotlib figure.
+        A tuple (figures, entropy)
     """
+    # Calculate utilization internally
+    used_codewords = np.sum(codebook_counter > 0)
+    
     figures = {}  # Dictionary to store figures for external use
+    
+    # Calculate probabilities
+    total_counts = np.sum(codebook_counter)
+    probs = codebook_counter / total_counts if total_counts > 0 else codebook_counter
+    
+    # Calculate Entropy
+    probs_safe = probs[probs > 0]
+    entropy = -np.sum(probs_safe * np.log2(probs_safe)) if probs_safe.size > 0 else 0.0
 
     # Create the figure
     fig = plt.figure(figsize=(12, 6))
-
+    plot_data = probs
+    
     if sort_by_counter:
         # Sort by counter descending
         sorted_indices = np.argsort(codebook_counter)[::-1]
-        sorted_counter = codebook_counter[sorted_indices]
-        plt.bar(range(codebook_size), sorted_counter, width=1.0)
+        plot_data = plot_data[sorted_indices]
+        plt.bar(range(codebook_size), plot_data, width=1.0)
     else:
         # Show in default order
-        plt.bar(range(codebook_size), codebook_counter, width=1.0)
+        plt.bar(range(codebook_size), plot_data, width=1.0)
+    
+    plt.xlabel("Codeword Index Rank (Sorted by Frequency)" if sort_by_counter else "Codeword Index")
+    if use_log_scale:
+        plt.yscale("log")
+    plt.ylabel("Probability (Log Scale)" if use_log_scale else "Probability")
 
-    plt.xlabel("Codeword Index")
-    plt.ylabel("Usage Count")
-    plt.text(
-        codebook_size * 0.7,
-        max(codebook_counter) * 0.9,
-        f"Used codewords: {used_codewords}/{codebook_size}\nUtilization rate: {utilization_rate:.4f}%",
-        fontsize=12,
-        bbox=dict(facecolor="white", alpha=0.5),
-    )
-    plt.title("Codebook Usage Distribution")
+    max_entropy = np.log2(codebook_size) if codebook_size > 0 else 0.0
+    plt.title(f"Codebook Usage (Used: {used_codewords}/{codebook_size}, Entropy: {entropy:.4f}/{max_entropy:.4f})")
     plt.tight_layout()
 
     # Generate tag for the figure
+    scale_tag = "log" if use_log_scale else "linear"
     tag = (
-        f"{tag_prefix}_codebook_usage_distribution"
+        f"{tag_prefix}_codebook_usage_distribution_{scale_tag}"
         if tag_prefix
-        else "codebook_usage_distribution"
+        else f"codebook_usage_distribution_{scale_tag}"
     )
     figures[tag] = fig
 
@@ -259,7 +279,8 @@ def plot_codebook_usage_distribution(
     # Close the figure to avoid memory leaks
     plt.close()
 
-    return figures
+    return figures, entropy
+
 
 
 if __name__ == "__main__":

@@ -3,12 +3,14 @@ import torch
 from src.models.jsa import JSA
 from torch.utils.data import DataLoader
 from src.data.mnist import MNISTDataset
+from src.data.cifar10 import CIFAR10Dataset
 import math
 import numpy as np
 import os
 import logging
 import shutil
 from lightning.pytorch.cli import LightningCLI
+import torch.nn.functional as F
 
 from src.utils.codebook_utils import (
     encode_multidim_to_index,
@@ -84,7 +86,7 @@ def main(exp_dir, config_path, checkpoint_path):
     model.eval()
 
     # Prepare test data
-    test_dataset = MNISTDataset(root="./data", train=False)
+    test_dataset = CIFAR10Dataset(root="./data/cifar10", train=False)
     test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
 
     num_latent_vars = model.proposal_model.num_latent_vars
@@ -95,13 +97,37 @@ def main(exp_dir, config_path, checkpoint_path):
     logger.info(
         f"Number of latent variables: {num_latent_vars}, Codebook size: {codebook_size}"
     )
+    
+    total_mse = 0.0
+    total_l1 = 0.0
+    total_samples = 0
+    
+    vis_samples = {}
 
     # Iterate over test data and count codebook usage
     with torch.no_grad():  # Disable gradient computation
         for batch in test_loader:
-            x, _, idx = batch
+            x, y, idx = batch
             x = x.to(device)
             h = model.proposal_model.encode(x)  # [B, H, W, num_latent_vars]
+            x_hat = model.joint_model.decode(h)
+            
+            mse = F.mse_loss(x_hat, x, reduction="mean").item()
+            l1 = F.l1_loss(x_hat, x, reduction="mean").item()
+            total_mse += mse * x.size(0)
+            total_l1 += l1 * x.size(0)
+            total_samples += x.size(0)
+            
+            if len(vis_samples) < 10:
+                batch_y = y.cpu().numpy()
+                x_cpu = x.cpu().numpy()
+                x_hat_cpu = x_hat.cpu().numpy()
+                for i in range(x.size(0)):
+                    if batch_y[i] not in vis_samples:
+                        vis_samples[batch_y[i]] = (x_cpu[i], x_hat_cpu[i])
+                    if len(vis_samples) >= 10:
+                        break
+            
             h = h.view(-1, num_latent_vars) # [B*H*W, num_latent_vars]
             # print("Sampled latent variables h shape:", h.shape)
 
@@ -114,61 +140,103 @@ def main(exp_dir, config_path, checkpoint_path):
     utilization_rate = used_codewords / codebook_size * 100
     logger.info(f"Used codewords: {used_codewords}/{codebook_size}")
     logger.info(f"Codebook utilization rate: {utilization_rate:.4f}%")
+    
+    avg_mse = total_mse / total_samples
+    avg_l1 = total_l1 / total_samples
+    logger.info(f"Average MSE on test set: {avg_mse:.6f}")
+    logger.info(f"Average L1 Loss on test set: {avg_l1:.6f}")
+    
+    if len(vis_samples) > 0:
+        sorted_keys = sorted(vis_samples.keys())
+        orig_images = torch.stack([torch.tensor(vis_samples[k][0]) for k in sorted_keys])
+        recon_images = torch.stack([torch.tensor(vis_samples[k][1]) for k in sorted_keys])
+        save_images_grid(
+            images=orig_images,
+            save_path=f"{infer_dir}/original_images.png",
+            nrow=len(orig_images),
+        )
+        # save_images_grid(
+        #     orig_images,
+        #     save_path=f"{infer_dir}/original_images.png",
+        #     images_per_page=len(orig_images),
+        #     grid_size=(1, len(orig_images)),
+        #     title="Original Images",
+        #     save_to_disk=True,
+        # )
+        save_images_grid(
+            images=recon_images,
+            save_path=f"{infer_dir}/reconstructed_images.png",
+            nrow=len(recon_images),
+        )
+        # save_images_grid(
+        #     recon_images,
+        #     save_path=f"{infer_dir}/reconstructed_images.png",
+        #     images_per_page=len(recon_images),
+        #     grid_size=(1, len(recon_images)),
+        #     title="Reconstructed Images",
+        #     save_to_disk=True,
+        # )
+        comparison = torch.cat([orig_images, recon_images], dim=0)
+        save_images_grid(
+            images=comparison,
+            save_path=f"{infer_dir}/images_comparison.png",
+            nrow=len(orig_images)
+        )
 
     # Find indices of used codewords
     used_codeword_indices = np.where(codebook_counter > 0)[0]
     logger.info(f"Used codeword indices: {used_codeword_indices}")
 
     # Decode used codewords to inspect corresponding images
-    model.joint_model.eval()
-    decoded_images = decode_images(
-        used_codeword_indices, model, num_categories
-    )
-    save_images_grid(
-        decoded_images,
-        save_path=f"{infer_dir}/decoded_codewords",
-        images_per_page=100,
-        grid_size=(10, 10),
-        title="Decoded Images from Used Codewords",
-        save_to_disk=True,
-    )
+    # model.joint_model.eval()
+    # decoded_images = decode_images(
+    #     used_codeword_indices, model, num_categories
+    # )
+    # save_images_grid(
+    #     decoded_images,
+    #     save_path=f"{infer_dir}/decoded_codewords",
+    #     images_per_page=100,
+    #     grid_size=(10, 10),
+    #     title="Decoded Images from Used Codewords",
+    #     save_to_disk=True,
+    # )
 
     # Also decode unused codewords to inspect their images
-    unused_codeword_indices = np.where(codebook_counter == 0)[0]
-    logger.info(f"Unused codeword indices: {unused_codeword_indices}")
+    # unused_codeword_indices = np.where(codebook_counter == 0)[0]
+    # logger.info(f"Unused codeword indices: {unused_codeword_indices}")
     # Select a subset of unused codewords to decode
-    num_unused_to_decode = min(100, len(unused_codeword_indices))
-    unused_codeword_indices = unused_codeword_indices[:num_unused_to_decode]
+    # num_unused_to_decode = min(100, len(unused_codeword_indices))
+    # unused_codeword_indices = unused_codeword_indices[:num_unused_to_decode]
 
-    decoded_unused_images = decode_images(
-        unused_codeword_indices, model, num_categories
-    )
+    # decoded_unused_images = decode_images(
+    #     unused_codeword_indices, model, num_categories
+    # )
 
     # Save decoded images, 100 per page in a 10x10 grid
-    save_images_grid(
-        decoded_unused_images,
-        save_path=f"{infer_dir}/decoded_unused_codewords",
-        images_per_page=100,
-        grid_size=(10, 10),
-        title="Decoded Images from Unused Codewords",
-        save_to_disk=True,
-    )
+    # save_images_grid(
+    #     decoded_unused_images,
+    #     save_path=f"{infer_dir}/decoded_unused_codewords",
+    #     images_per_page=100,
+    #     grid_size=(10, 10),
+    #     title="Decoded Images from Unused Codewords",
+    #     save_to_disk=True,
+    # )
 
     # Plot 1D distribution
-    plot_codebook_usage_distribution(
+    _, code_entropy = plot_codebook_usage_distribution(
         codebook_counter,
         codebook_size,
-        used_codewords,
-        utilization_rate,
         save_path=f"{infer_dir}/codebook_usage_distribution.png",
-        sort_by_counter=False,
+        sort_by_counter=True,
         save_to_disk=True,
+        use_log_scale=False,
     )
+    logger.info(f"Codebook utilization entropy: {code_entropy:.4f} bits")
 
 
 if __name__ == "__main__":
 
-    exp_dir = "egs/continuous_cifar10/categorical_prior_conv/version_16"
+    exp_dir = "egs/continuous_cifar10/categorical_prior_conv/version_3"
     config_path = "./configs/categorical_prior_continuous_cifar10_conv.yaml"
     checkpoint_path = f"{exp_dir}/checkpoints/best-checkpoint.ckpt"
     main(exp_dir, config_path, checkpoint_path)

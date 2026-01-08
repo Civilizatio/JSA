@@ -281,7 +281,7 @@ class JSA(LightningModule):
     def validation_step(self, batch, batch_idx):
         x, _, idx = batch  # x: [B, D], idx: [B,]
 
-        nll = -self.get_nll(x, idx=idx)
+        nll = -self.get_nll(x, idx=idx) # [B,]
 
         self.log("valid/nll", nll.mean(), prog_bar=True, sync_dist=True)
 
@@ -334,13 +334,12 @@ class JSA(LightningModule):
             )
 
             # Plot codebook usage distribution
-            fig_dict = plot_codebook_usage_distribution(
+            fig_dict, _ = plot_codebook_usage_distribution(
                 codebook_counter=self.codebook_counter.cpu().numpy(),
                 codebook_size=self.codebook_size,
-                used_codewords=used_codewords,
-                utilization_rate=utilization_rate,
                 tag_prefix="valid",
                 save_to_disk=False,
+                use_log_scale=False
             )
             for tag, fig in fig_dict.items():
                 self.logger.experiment.add_figure(
@@ -352,18 +351,19 @@ class JSA(LightningModule):
             # Reset codebook counter for next epoch
             self.codebook_counter.zero_()
 
+    @torch.no_grad()
     def get_nll(self, x, idx):
 
         # MISampling step
         h = self.sampler.sample(
-            x, idx=idx, num_steps=self.num_mis_steps, parallel=True
-        )  # [B, 1, ..., num_latent_vars]
-        h = h.squeeze(1)  # [B, ..., num_latent_vars]
+            x, idx=idx, num_steps=self.num_mis_steps, parallel=True, return_all=True
+        )  # [B, num_samples, ..., num_latent_vars]
+        # h = h.squeeze(1)  # [B, ..., num_latent_vars]
 
         # log p(x) ~ log p(x,h) - log q(h|x)
-        log_nll = self.joint_model.log_joint_prob(
+        log_nll = self.joint_model.log_joint_prob_multiple_samples(
             x, h
-        ) - self.proposal_model.log_conditional_prob(h, x)
+        ).mean(dim=1) - self.proposal_model.log_conditional_prob(h, x).mean(dim=1)  # [B,]
 
         return log_nll.detach().cpu().numpy()
 
@@ -383,6 +383,8 @@ class JSA(LightningModule):
             dtype=torch.long,
             device=self.device,
         )
+        self.mse_error = torch.tensor(0.0, device=self.device)
+        self.mse_count = 0
 
     @torch.no_grad()
     def test_step(self, batch, batch_idx):
@@ -393,8 +395,14 @@ class JSA(LightningModule):
         self.log("test/nll", nll.mean(), prog_bar=True, sync_dist=True)
 
         # Update codebook counter
-        h = self.proposal_model.encode(x)
+        h = self.proposal_model.encode(x) # [B, ..., num_latent_vars]
         # Calculate 1D indices from multi-dimensional categorical latent variables
+        x_hat = self.joint_model.decode(h)
+        
+        mse = torch.mean((x - x_hat) ** 2, dim=[1,2,3])  # [B,]
+        self.log("test/mse", mse.mean(), prog_bar=True, sync_dist=True)
+        self.mse_error += mse.sum()
+        self.mse_count += x.size(0)
 
         # Calculate indices
         indices = encode_multidim_to_index(h, self.num_categories)  # [B]
@@ -403,6 +411,7 @@ class JSA(LightningModule):
             0, indices, torch.ones_like(indices, dtype=torch.long)
         )
         self.codebook_multi_dim_indices[indices] = h.long()
+        
 
     def on_test_epoch_end(self):
         if dist.is_available() and dist.is_initialized():
@@ -438,6 +447,14 @@ class JSA(LightningModule):
         # Reset codebook counter for next epoch
         self.codebook_counter.zero_()
         self.codebook_multi_dim_indices.zero_()
+        
+        # Log final MSE
+        final_mse = self.mse_error / self.mse_count
+        self.log("test/final_mse", final_mse, prog_bar=True, sync_dist=True)
+        
+        # Reset MSE accumulators
+        self.mse_error = 0.0
+        self.mse_count = 0
 
     # ========================= Checkpointing =========================
 

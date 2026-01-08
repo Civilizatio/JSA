@@ -62,7 +62,7 @@ tensorboard --logdir=egs/continuous_mnist/categorical_prior_conv/version_0 --por
 ```
 
 ``` bash
-tensorboard --logdir=egs/continuous_cifar10/categorical_prior_conv/version_3 --port=6011
+tensorboard --logdir=egs/continuous_cifar10/categorical_prior_conv/version_4 --port=6024
 ```
 tensorboard --logdir=egs/continuous_mnist/categorical_prior_conv/base_version --port=6010
 

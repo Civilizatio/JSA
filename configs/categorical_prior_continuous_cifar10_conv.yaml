@@ -65,7 +65,7 @@ model:
     lr_proposal: 3e-4
     lr_discriminator: 1e-4
     num_mis_steps: 20
-    cache_start_epoch: 200
+    cache_start_epoch: 20000
 
     init_from_ckpt: null
     init_mode: resume # "resume" or "warm_start"
@@ -80,7 +80,7 @@ model:
       scheduler:
         _target_: src.utils.schedulers.SigmaScheduler
         max_val: 0.2
-        min_val: 0.01
+        min_val: 0.02
         warmup_steps: 5000
         total_steps: 20000 # if using epochs, make sure to set max_epochs in trainer
         mode: cosine

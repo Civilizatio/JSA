@@ -23,34 +23,47 @@
 ├── configs/                       # 配置文件夹
 │   ├── bernoulli_prior_binary_mnist.yaml           # Bernoulli MNIST 实验配置文件
 │   ├── categorical_prior_continuous_mnist.yaml     # Categorical MNIST 实验配置文件
+│   ├── categorical_prior_continuous_cifar10_conv.yaml # Categorical CIFAR10 实验配置文件
+│   ├── categorical_prior_continuous_mnist_conv.yaml # Categorical MNIST 实验配置文件
 │   └── ...                        
 ├── data/                          # 数据相关存储文件夹
 │   ├── gaussian_2d/               # 二维高斯数据集
 │   ├── mnist/                     # MNIST 数据集
+│   ├── cifar10/                   # CIFAR10 数据集
 │   └── ...                        
 ├── src/                           # 方法相关
 │   ├── base/                      # 核心模块
-│   │   ├── jsa_module.py          # 关于 proposal model 和 joint model 的抽象类定义
+│   │   ├── base_jsa_modules.py    # 关于 proposal model 和 joint model 的抽象类定义
 │   │   ├── base_sampler.py        # 抽象采样器定义
+|   |   ├── base_dataset.py        # 抽象数据集定义
 │   │   └── ...                    
 │   ├── data/                      # 数据集定义
 │   │   ├── gaussian_2d.py         # 二维高斯数据集
 │   │   ├── mnist.py               # MNIST 数据集
+│   │   ├── cifar10.py             # CIFAR10 数据集
 │   │   └── ...                    
 │   ├── models/                    # 模型定义
 │   │   ├── jsa.py                 # JSA 方法实现
 │   │   ├── components/            # 子模块定义
 │   │   │   ├── proposal_model.py  # proposal 模型定义
 │   │   │   ├── joint_model.py     # joint 模型定义
+|   |   │   ├── networks.py        # 各种神经网络定义，供 proposal model 和 joint model 使用
+|   |   |   ├── discriminator.py   # 判别器定义
+|   |   |   ├── losses.py         # GAN loss 定义，调用 discriminator 计算 loss
 │   │   │   └── ...                
 │   │   └── ...                    
 │   ├── samplers/                  # 采样器定义
 │   │   ├── misampler.py           # MIS 采样器实现
 │   │   └── ...                    
 │   └── utils/                     # 工具函数
+│       ├── controllers.py     # 控制器定义，例如 sigma controller
+│       ├── schedulers.py      # 学习率调度器定义，例如 sigma scheduler
+│       ├── codebook_utils.py  # 码本相关工具函数
+│       └── ...
+|
 ├── scripts/                       # 运行脚本
-│   ├── train.py     # 运行 Bernoulli MNIST 实验脚本
-│   ├── run_categorical_MNIST.py   # 运行 Categorical MNIST 实验脚本
+│   ├── train.py     # 运行 训练脚本
+│   ├── infer.py     # 运行 推断脚本
 │   └── ...                        
 ├── docs/                          # 文档文件夹
 │   ├── structure.md               # 结构说明
