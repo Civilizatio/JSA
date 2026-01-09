@@ -19,6 +19,9 @@ from src.utils.codebook_utils import (
     save_images_grid,
 )
 
+from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity as LPIPSMetric
+from torchmetrics.image.fid import FrechetInceptionDistance as FIDMetric
+from torchmetrics.image.ssim import StructuralSimilarityIndexMeasure as SSIMMetric
 
 
 
@@ -84,6 +87,13 @@ def main(exp_dir, config_path, checkpoint_path):
     model.load_state_dict(ckpt["state_dict"])
     model=model.to(device)
     model.eval()
+    
+    # LPIPS metric
+    lpips_metric = LPIPSMetric(net_type="vgg").to(device)
+    # FID metric
+    fid_metric = FIDMetric(feature=2048).to(device)
+    # SSIM metric
+    ssim_metric = SSIMMetric(data_range=1.0).to(device)
 
     # Prepare test data
     test_dataset = CIFAR10Dataset(root="./data/cifar10", train=False)
@@ -112,11 +122,27 @@ def main(exp_dir, config_path, checkpoint_path):
             h = model.proposal_model.encode(x)  # [B, H, W, num_latent_vars]
             x_hat = model.joint_model.decode(h)
             
+            # x and x_hat are in [0,1] range
+            # LPIPS: need to be in [-1,1] range
+            x_lpips = x * 2 - 1
+            x_hat_lpips = x_hat * 2 - 1
+            lpips_metric.update(x_lpips, x_hat_lpips)
+            
+            # SSIM
+            ssim_metric.update(x, x_hat)
+            
+            # MSE and L1
             mse = F.mse_loss(x_hat, x, reduction="mean").item()
             l1 = F.l1_loss(x_hat, x, reduction="mean").item()
             total_mse += mse * x.size(0)
             total_l1 += l1 * x.size(0)
             total_samples += x.size(0)
+            
+            # FID: need to convert to [0,255] and uint8
+            x_fid = (x * 255).to(torch.uint8)
+            x_hat_fid = (x_hat * 255).to(torch.uint8)
+            fid_metric.update(x_fid, real=True)
+            fid_metric.update(x_hat_fid, real=False)
             
             if len(vis_samples) < 10:
                 batch_y = y.cpu().numpy()
@@ -143,8 +169,14 @@ def main(exp_dir, config_path, checkpoint_path):
     
     avg_mse = total_mse / total_samples
     avg_l1 = total_l1 / total_samples
+    final_lpips = lpips_metric.compute().item()
+    final_fid = fid_metric.compute().item()
+    final_ssim = ssim_metric.compute().item()
     logger.info(f"Average MSE on test set: {avg_mse:.6f}")
     logger.info(f"Average L1 Loss on test set: {avg_l1:.6f}")
+    logger.info(f"Average LPIPS on test set: {final_lpips:.6f}")
+    logger.info(f"FID between test set and reconstructions: {final_fid:.6f}")
+    logger.info(f"Average SSIM on test set: {final_ssim:.6f}")
     
     if len(vis_samples) > 0:
         sorted_keys = sorted(vis_samples.keys())
@@ -236,7 +268,7 @@ def main(exp_dir, config_path, checkpoint_path):
 
 if __name__ == "__main__":
 
-    exp_dir = "egs/continuous_cifar10/categorical_prior_conv/version_3"
+    exp_dir = "egs/continuous_cifar10/categorical_prior_conv/version_5"
     config_path = "./configs/categorical_prior_continuous_cifar10_conv.yaml"
-    checkpoint_path = f"{exp_dir}/checkpoints/best-checkpoint.ckpt"
+    checkpoint_path = f"{exp_dir}/checkpoints/last.ckpt"
     main(exp_dir, config_path, checkpoint_path)
