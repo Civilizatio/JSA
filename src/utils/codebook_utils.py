@@ -107,12 +107,11 @@ def save_images_grid(images, save_path, nrow=None):
     # images: [B, C, H, W] in range [-1, 1]
     # Denormalize to [0, 1]
    
-    img_vis = torch.clamp(images, 0, 1)
     
     if nrow is None:
         nrow = int(np.sqrt(images.shape[0]))
     
-    grid = torchvision.utils.make_grid(img_vis, nrow=nrow, padding=2)
+    grid = torchvision.utils.make_grid(images, nrow=nrow, padding=2,normalize=True, value_range=(-1, 1))
     torchvision.utils.save_image(grid, save_path)
 
 def save_images_grid_(

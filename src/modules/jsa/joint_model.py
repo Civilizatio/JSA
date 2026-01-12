@@ -220,7 +220,7 @@ class JointModelBernoulliGaussian(BaseJointModel):
 
         gaussian_dist = torch.distributions.Normal(loc=mean_x, scale=self.SIGMA)
         x_samples = gaussian_dist.sample()  # [B, output_dim, num_samples]
-        return torch.clamp(x_samples, 0.0, 1.0)
+        return torch.clamp(x_samples, -1.0, 1.0)
 
     def decode(self, h):
         """Decode x ~ p(x|h)"""
@@ -238,52 +238,25 @@ class JointModelCategoricalGaussian(BaseJointModel):
     def __init__(
         self,
         net: nn.Module,
-        num_categories,
         num_latent_vars,
-        embedding_dims=None,
         sigma=0.1,
         sample_chunk_size=8,
     ):
         super().__init__()
 
-        self.num_latent_vars = num_latent_vars
+        # self.num_latent_vars = num_latent_vars
         self.sample_chunk_size = sample_chunk_size # for sampling in chunks to save memory
         self.register_buffer("sigma", torch.tensor(float(sigma)))
 
-        if len(num_categories) == 1 and num_latent_vars > 1:
-            self._num_categories = list(num_categories) * num_latent_vars
-        else:
-            assert (
-                len(num_categories) == num_latent_vars
-            ), "num_categories must be an integer or a list of length num_latent_vars"
-            self._num_categories = list(num_categories)
-
-        # Add Embedding layer for Categorical latent variables
-        if embedding_dims is None:
-            self.embedding_dims = [
-                min(2, int(math.log2(K))) for K in self._num_categories
-            ]
-        elif len(embedding_dims) == 1 and num_latent_vars > 1:
-            self.embedding_dims = list(embedding_dims) * num_latent_vars
-        else:
-            assert (
-                len(embedding_dims) == num_latent_vars
-            ), "embedding_dims must be an integer or a list of length num_latent_vars"
-            self.embedding_dims = list(embedding_dims)
-
-        self.embeddings = nn.ModuleList(
-            [
-                nn.Embedding(num_embeddings=K, embedding_dim=emb_dim)
-                for K, emb_dim in zip(self._num_categories, self.embedding_dims)
-            ]
-        )
-
-        self._latent_dim = sum(self.embedding_dims)
         self.net = net
 
     @property
     def latent_dim(self):
-        return self._latent_dim
+        return self.net.latent_dim
+    
+    @property
+    def num_categories(self):
+        return self.net.num_categories
 
     def get_last_layer_weight(self):
         return self.net.get_last_layer_weight()
@@ -299,7 +272,7 @@ class JointModelCategoricalGaussian(BaseJointModel):
         Thus, log p(h) = sum over latent variables of -log(K_i)
         """
         num_categories_tensor = torch.tensor(
-            self._num_categories, device=h.device, dtype=torch.float
+            self.num_categories, device=h.device, dtype=torch.float
         )
         log_p_h = -torch.sum(torch.log(num_categories_tensor))
         return log_p_h
@@ -467,7 +440,7 @@ class JointModelCategoricalGaussian(BaseJointModel):
         gaussian_dist = torch.distributions.Normal(loc=mean_x, scale=self.sigma)
         x_samples = gaussian_dist.sample((num_samples,))  # [num_samples, B, ...]
         x_samples = (
-            torch.clamp(x_samples, 0.0, 1.0)
+            torch.clamp(x_samples, -1.0, 1.0)
             .permute(1, 0, *range(2, x_samples.dim()))
             .contiguous()
         )  # [B, num_samples, ...]
@@ -544,15 +517,5 @@ class JointModelCategoricalGaussian(BaseJointModel):
         Returns:
             mean_x: decoded observed data, shape [N, ...]
         """
-        h_embedded = [
-            embedding(h[..., i].long())  # [N, ...] -> [N, ..., embedding_dim_i]
-            for i, embedding in enumerate(self.embeddings)
-        ]
-        h_densed = torch.cat(h_embedded, dim=-1)  # [N, ..., latent_dim]
-
-        # Here, for MLP, h should be [N, latent_dim], we need to do nothing.
-        # For CNN, h should be [N, H, W, latent_dim], we need to permute to [N, latent_dim, H, W].
-        # However, we should not assume the net type here, so we just pass h_densed, and let the net handle it.
-
-        mean_x = self.net(h_densed)  # [N, ...]
+        mean_x = self.net(h)  # [N, ...]
         return mean_x  # [N, ...]

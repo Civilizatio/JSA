@@ -7,8 +7,18 @@ from src.base.base_dataset import JsaDataset
 
 class CIFAR10Dataset(JsaDataset):
     def __init__(self, root: str, train=True):
+        super().__init__()
+        transform = transforms.Compose(
+            [
+                transforms.ToTensor(),
+                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+            ]
+        )
         self.ds = datasets.CIFAR10(
-            root=root, train=train, download=True, transform=transforms.ToTensor()
+            root=root,
+            train=train,
+            download=True,
+            transform=transform,
         )
 
     def __len__(self):
@@ -18,8 +28,11 @@ class CIFAR10Dataset(JsaDataset):
         # x: [3, 32, 32], label: int
         # index: int
         x, label = self.ds[index]
-        return x, label, index
-
+        return {
+            "image": x,
+            "label": label,
+            "index": index,
+        }
 
 
 class CIFAR10DataModule(LightningDataModule):
@@ -42,17 +55,19 @@ class CIFAR10DataModule(LightningDataModule):
             batch_size=self.batch_size,
             shuffle=True,
             num_workers=self.num_workers,
+            pin_memory=True,
         )
 
     def val_dataloader(self):
         return DataLoader(
-            self.val_set, batch_size=self.batch_size, num_workers=self.num_workers
+            self.val_set, batch_size=self.batch_size, num_workers=self.num_workers, pin_memory=True
         )
 
     def test_dataloader(self):
         return DataLoader(
-            self.test_set, batch_size=self.batch_size, num_workers=self.num_workers
+            self.test_set, batch_size=self.batch_size, num_workers=self.num_workers, pin_memory=True
         )
+        
 
 
 if __name__ == "__main__":
@@ -60,11 +75,15 @@ if __name__ == "__main__":
     data_module.setup()
     train_loader = data_module.train_dataloader()
     for batch in train_loader:
-        x, y, idx = batch
-        print(x.shape, y.shape, idx.shape)
+        x = batch["image"]
+        print(x.shape)
+        y = batch["label"]
+        print(y)
+        idx = batch["index"]
+        print(idx)
         break
-
+        
     dataset = CIFAR10Dataset(root="./data/cifar10", train=True)
     print(f"Dataset length: {len(dataset)}")
-    x, label, index = dataset[0]
-    print(f"Sample shape: {x.shape}, Label: {label}, Index: {index}")
+    sample = dataset[0]
+    print(f"Sample shape: {sample['image'].shape}, Label: {sample['label']}, Index: {sample['index']}")

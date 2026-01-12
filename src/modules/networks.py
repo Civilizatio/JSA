@@ -1,4 +1,4 @@
-# src/models/components/networks.py
+# src/modules/networks.py
 # Define some network components here for proposal and joint models
 
 import torch
@@ -66,42 +66,12 @@ class MLPNetwork(nn.Module):
         elif self.net[-1].__class__ == nn.Tanh:
             return (x + 1) / 2  # scale from [-1, 1] to [0, 1]
         else:
-            return torch.clamp(x, 0.0, 1.0)  # clamp to [0, 1]
+            return torch.clamp(x, -1.0, 1.0)  # clamp to [0, 1]
 
     def forward(self, x):
         feature = self.net(x)
         return self.post_process(feature)
 
-
-class MLPEncoder(nn.Module):
-    def __init__(
-        self,
-        mlp_args,
-    ):
-        super().__init__()
-        self.flatten = nn.Flatten()
-        self.net = MLPNetwork(**mlp_args)
-
-    def forward(self, x):
-        x = self.flatten(x)
-        feature = self.net(x)
-        return feature
-
-
-class MLPDecoder(nn.Module):
-    def __init__(
-        self,
-        mlp_args,
-        output_shape=(1, 28, 28),
-    ):
-        super().__init__()
-        self.net = MLPNetwork(**mlp_args)
-        self.unflatten = nn.Unflatten(1, output_shape)
-
-    def forward(self, x):
-        feature = self.net(x)
-        feature = self.unflatten(feature)
-        return feature  # return to original shape
 
 
 class Normalize(nn.Module):
@@ -368,12 +338,13 @@ class Encoder(nn.Module):
         # namely, kernel_size=1
         self.conv_out = torch.nn.Conv2d(
             block_in,
-            # 2 * z_channels if double_z else z_channels,
-            z_channels,
+            2 * z_channels if double_z else z_channels,
+            # z_channels,
             # For VAE, may use double_z for mean and logvar,
             # here we just output z_channels
-            kernel_size=1,
+            kernel_size=3,
             stride=1,
+            padding=1,
         )
 
     def forward(self, x):
@@ -448,7 +419,9 @@ class Decoder(nn.Module):
 
         # z to block_in
         # To symmetrically match the Encoder, we use kernel_size=1 here
-        self.conv_in = torch.nn.Conv2d(z_channels, block_in, kernel_size=1, stride=1)
+        self.conv_in = torch.nn.Conv2d(
+            z_channels, block_in, kernel_size=3, stride=1, padding=1
+        )
 
         # middle
         self.mid = nn.Module()
@@ -535,97 +508,3 @@ class Decoder(nn.Module):
         return h
 
 
-class ConvDecoder(nn.Module):
-    def __init__(
-        self,
-        ch,
-        out_ch,
-        ch_mult,
-        num_res_blocks,
-        attn_resolutions,
-        dropout,
-        activation,
-        norm_type,
-        resamp_with_conv,
-        in_channels,
-        resolution,
-        z_channels,
-        final_activation="sigmoid",
-        **ignore_kwargs,
-    ):
-        super().__init__()
-        self.decoder = Decoder(
-            ch=ch,
-            out_ch=out_ch,
-            ch_mult=ch_mult,
-            num_res_blocks=num_res_blocks,
-            attn_resolutions=attn_resolutions,
-            dropout=dropout,
-            activation=activation,
-            norm_type=norm_type,
-            resamp_with_conv=resamp_with_conv,
-            in_channels=in_channels,
-            resolution=resolution,
-            z_channels=z_channels,
-        )
-
-        self.final_activation = final_activation
-        
-    def get_last_layer_weight(self):
-        return self.decoder.conv_out.weight
-
-    def forward(self, x):
-        # x: [B, H, W, z_channels]
-        x = x.permute(0, 3, 1, 2).contiguous()  # [B, H, W, z_channels] -> [B, z_channels, H, W]
-        x = self.decoder(x) # [B, out_ch, H, W]
-
-        # Rescale output to [0, 1] range if needed
-        if self.final_activation == "sigmoid":
-            x = torch.sigmoid(x)
-        elif self.final_activation == "tanh":
-            x = torch.tanh(x)
-            x = (x + 1) / 2
-
-        return x
-
-
-class ConvEncoder(nn.Module):
-    def __init__(
-        self,
-        ch,
-        out_ch,
-        ch_mult=(1, 2, 4, 8),
-        num_res_blocks=2,
-        attn_resolutions=[],
-        activation="relu",
-        norm_type="group",
-        dropout=0.0,
-        resamp_with_conv=True,
-        in_channels=1,
-        resolution=28,
-        z_channels=4,
-        **ignore_kwargs,
-    ):
-        super().__init__()
-        self.encoder = Encoder(
-            ch=ch,
-            out_ch=out_ch,
-            ch_mult=ch_mult,
-            num_res_blocks=num_res_blocks,
-            attn_resolutions=attn_resolutions,
-            activation=activation,
-            norm_type=norm_type,
-            dropout=dropout,
-            resamp_with_conv=resamp_with_conv,
-            in_channels=in_channels,
-            resolution=resolution,
-            z_channels=z_channels,
-        )
-        
-    def get_last_layer_weight(self):
-        return self.encoder.conv_out.weight
-
-    def forward(self, x):
-        x = self.encoder(x)  # [B, z_channels, H, W]
-        x = x.permute(0, 2, 3, 1).contiguous()  # [B, H, W, z_channels]
-        return x

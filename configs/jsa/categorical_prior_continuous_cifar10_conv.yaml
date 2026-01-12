@@ -104,7 +104,7 @@ trainer:
   logger:
     class_path: lightning.pytorch.loggers.tensorboard.TensorBoardLogger
     init_args:
-      save_dir: ./egs/continuous_cifar10
+      save_dir: ./egs/cifar10/jsa
       name: categorical_prior_conv
 
   callbacks:

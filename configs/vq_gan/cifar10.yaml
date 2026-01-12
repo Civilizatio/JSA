@@ -1,0 +1,110 @@
+seed_everything: 23
+
+model:
+  class_path: src.models.vq_gan.VQModel
+  init_args:
+    encoder:
+      class_path: src.modules.networks.Encoder
+      init_args:
+        ch: 64
+        ch_mult: [1, 2, 4]
+        num_res_blocks: 2
+        z_channels: 256
+        double_z: false
+        in_channels: 3
+        resolution: 32
+        activation: swish
+        norm_type: group
+        attn_resolutions: []
+        dropout: 0.0
+        resamp_with_conv: true
+    decoder:
+      class_path: src.modules.networks.Decoder
+      init_args:
+        ch: 64
+        ch_mult: [1, 2, 4]
+        num_res_blocks: 2
+        z_channels: 256
+        double_z: false
+        out_ch: 3
+        resolution: 32
+        activation: swish
+        norm_type: group
+        attn_resolutions: []
+        dropout: 0.0
+        resamp_with_conv: true
+
+    quantizer:
+      class_path: src.modules.vqvae.quantize.VectorQuantizerEMA
+      init_args:
+        n_e: 1024
+        e_dim: 256
+        beta: 0.25
+        remap: null
+        sane_index_shape: false
+        in_channels: 256
+
+    loss:
+      class_path: src.modules.losses.VQLPIPSWithDiscriminator
+      init_args:
+        disc_conditional: False
+        disc_in_channels: 3
+        disc_num_layers: 2
+        disc_ndf: 32
+        disc_start: 50000 # larger than max_steps, to disable for discriminator training
+        disc_weight: 0.8
+        codebook_weight: 1.0
+        perceptual_weight: 1.0
+        pixel_loss: "l1"
+
+    
+    image_key: "image"
+    base_learning_rate: 2e-4
+    ckpt_path: null
+
+
+data:
+  class_path: src.data.cifar10.CIFAR10DataModule
+  init_args:
+    root: ./data/cifar10
+    batch_size: 64
+    num_workers: 8
+
+trainer:
+  
+  logger:
+    class_path: lightning.pytorch.loggers.TensorBoardLogger
+    init_args:
+      save_dir: ./egs/cifar10/vqgan
+      name: vq_gan_cifar10
+
+  callbacks:
+    - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+      init_args:
+        filename: "{epoch:06}"
+        save_last: true
+        save_top_k: 3
+        monitor: val/rec_loss
+    
+    - class_path: lightning.pytorch.callbacks.LearningRateMonitor
+      init_args:
+        logging_interval: "step"
+
+    - class_path: src.utils.callbacks.ImageLogger
+      init_args:
+        batch_frequency: 750
+        max_images: 4
+        clamp: true
+
+    - class_path: src.utils.grad_norm_callback.GradientNormCallback
+      init_args:
+        norm_type: 2
+        log_every_n_steps: 1
+
+  accelerator: gpu
+  devices: [4, 5, 6, 7]
+  strategy: ddp_find_unused_parameters_true
+  max_epochs: 400
+  max_steps: 20000 # higher priority than max_epochs
+  precision: 32
+    

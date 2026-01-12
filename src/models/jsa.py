@@ -14,9 +14,8 @@ from src.utils.codebook_utils import (
 from src.utils.controllers import SigmaController
 from src.utils.file_logger import get_file_logger
 
-from src.models.components.losses import JSAGANLoss
+from src.modules.losses.jsa_gan import JSAGANLoss
 import math
-
 
 
 class JSA(LightningModule):
@@ -60,12 +59,12 @@ class JSA(LightningModule):
         self.init_strict = init_strict
         self._weights_loaded = False  # guard to ensure weights are loaded only once
 
-        self.sigma_controller: SigmaController | None = instantiate(
-            sigma_controller
-        ) if sigma_controller is not None else None
+        self.sigma_controller: SigmaController | None = (
+            instantiate(sigma_controller) if sigma_controller is not None else None
+        )
 
-        self.train_logger = None # Not initialized yet
-        
+        self.train_logger = None  # Not initialized yet
+
         # For visualization during validation
         self.validation_step_outputs = []
 
@@ -84,10 +83,11 @@ class JSA(LightningModule):
         """
         log_dir = self.trainer.logger.log_dir
         self.train_logger = get_file_logger(
-            log_path=f"{log_dir}/train.log", name="train_logger", rank=self.trainer.global_rank
+            log_path=f"{log_dir}/train.log",
+            name="train_logger",
+            rank=self.trainer.global_rank,
         )
-        
-        
+
         if self.init_from_ckpt is None or self._weights_loaded:
             return
 
@@ -169,7 +169,9 @@ class JSA(LightningModule):
             init_sigma = self.sigma_controller.sigma
             if hasattr(self.joint_model, "set_sigma"):
                 self.joint_model.set_sigma(init_sigma)
-                self.train_logger.info(f"Initial sigma set to {init_sigma} for joint model.")
+                self.train_logger.info(
+                    f"Initial sigma set to {init_sigma} for joint model."
+                )
 
     def on_train_epoch_start(self):
         if self.current_epoch >= self.cache_start_epoch:
@@ -181,7 +183,9 @@ class JSA(LightningModule):
         self.sampler.reset_acceptance_stats()
 
     def training_step(self, batch, batch_idx):
-        x, _, idx = batch  # x: [B, C, H, W], idx: [B,]
+
+        x = batch["image"]
+        idx = batch["index"]
 
         # MISampling step
         h = self.sampler.sample(
@@ -201,7 +205,7 @@ class JSA(LightningModule):
         nll_loss, x_hat = self.joint_model.get_loss(
             x, h, return_forward=True, backward_fn=self.manual_backward
         )
-        total_loss_joint = nll_loss # only for logging
+        total_loss_joint = nll_loss  # only for logging
         if self.gan_loss is not None:
 
             last_layer = (
@@ -279,9 +283,10 @@ class JSA(LightningModule):
             )
 
     def validation_step(self, batch, batch_idx):
-        x, _, idx = batch  # x: [B, D], idx: [B,]
+        x = batch["image"]
+        idx = batch["index"]  # x: [B, C, H, W], idx: [B,]
 
-        nll = -self.get_nll(x, idx=idx) # [B,]
+        nll = -self.get_nll(x, idx=idx)  # [B,]
 
         self.log("valid/nll", nll.mean(), prog_bar=True, sync_dist=True)
 
@@ -339,7 +344,7 @@ class JSA(LightningModule):
                 codebook_size=self.codebook_size,
                 tag_prefix="valid",
                 save_to_disk=False,
-                use_log_scale=False
+                use_log_scale=False,
             )
             for tag, fig in fig_dict.items():
                 self.logger.experiment.add_figure(
@@ -361,9 +366,11 @@ class JSA(LightningModule):
         # h = h.squeeze(1)  # [B, ..., num_latent_vars]
 
         # log p(x) ~ log p(x,h) - log q(h|x)
-        log_nll = self.joint_model.log_joint_prob_multiple_samples(
-            x, h
-        ).mean(dim=1) - self.proposal_model.log_conditional_prob(h, x).mean(dim=1)  # [B,]
+        log_nll = self.joint_model.log_joint_prob_multiple_samples(x, h).mean(
+            dim=1
+        ) - self.proposal_model.log_conditional_prob(h, x).mean(
+            dim=1
+        )  # [B,]
 
         return log_nll.detach().cpu().numpy()
 
@@ -388,18 +395,19 @@ class JSA(LightningModule):
 
     @torch.no_grad()
     def test_step(self, batch, batch_idx):
-        x, _, idx = batch  # x: [B, D], idx: [B,]
+        x = batch["image"]
+        idx = batch["index"]  # x: [B, C, H, W], idx: [B,]
 
         nll = -self.get_nll(x, idx=idx)
 
         self.log("test/nll", nll.mean(), prog_bar=True, sync_dist=True)
 
         # Update codebook counter
-        h = self.proposal_model.encode(x) # [B, ..., num_latent_vars]
+        h = self.proposal_model.encode(x)  # [B, ..., num_latent_vars]
         # Calculate 1D indices from multi-dimensional categorical latent variables
         x_hat = self.joint_model.decode(h)
-        
-        mse = torch.mean((x - x_hat) ** 2, dim=[1,2,3])  # [B,]
+
+        mse = torch.mean((x - x_hat) ** 2, dim=[1, 2, 3])  # [B,]
         self.log("test/mse", mse.mean(), prog_bar=True, sync_dist=True)
         self.mse_error += mse.sum()
         self.mse_count += x.size(0)
@@ -411,7 +419,6 @@ class JSA(LightningModule):
             0, indices, torch.ones_like(indices, dtype=torch.long)
         )
         self.codebook_multi_dim_indices[indices] = h.long()
-        
 
     def on_test_epoch_end(self):
         if dist.is_available() and dist.is_initialized():
@@ -447,11 +454,11 @@ class JSA(LightningModule):
         # Reset codebook counter for next epoch
         self.codebook_counter.zero_()
         self.codebook_multi_dim_indices.zero_()
-        
+
         # Log final MSE
         final_mse = self.mse_error / self.mse_count
         self.log("test/final_mse", final_mse, prog_bar=True, sync_dist=True)
-        
+
         # Reset MSE accumulators
         self.mse_error = 0.0
         self.mse_count = 0
@@ -481,4 +488,3 @@ class JSA(LightningModule):
                 # we expect that checkpoint was saved from rank0 and all ranks loaded same dict,
                 # but ensure everyone has the same in distributed environment
                 self.sampler.sync_cache()
-
