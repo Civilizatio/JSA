@@ -70,6 +70,11 @@ class JSA(LightningModule):
 
         self.log_codebook_utilization_valid = True
         self.log_codebook_utilization_test = False
+        
+        self.grad_norm_modules = {
+            "joint_model": self.joint_model,
+            "proposal_model": self.proposal_model,
+        }
 
     def setup(self, stage=None):
         device = self.device

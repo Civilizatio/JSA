@@ -1,6 +1,6 @@
 import torch
 import torch.nn.functional as F
-import pytorch_lightning as pl
+from lightning.pytorch import LightningModule
 
 from src.modules.networks import Encoder, Decoder
 from src.modules.vqvae.quantize import VectorQuantizer2 as VectorQuantizer
@@ -8,13 +8,13 @@ from src.modules.losses.vqperceptual import VQLPIPSWithDiscriminator
 from src.utils.file_logger import get_file_logger
 
 
-class VQModel(pl.LightningModule):
+class VQModel(LightningModule):
     def __init__(
         self,
-        encoder,
-        decoder,
-        loss,
-        quantizer,
+        encoder: Encoder,
+        decoder: Decoder,
+        loss: VQLPIPSWithDiscriminator,
+        quantizer: VectorQuantizer,
         base_learning_rate=2e-4,
         ckpt_path=None,
         ignore_keys=[],
@@ -42,6 +42,12 @@ class VQModel(pl.LightningModule):
 
         self.train_logger = None
         self.automatic_optimization = False
+        
+        self.grad_norm_modules = {
+            "encoder": self.encoder,
+            "decoder": self.decoder,
+            "quantizer": self.quantizer,
+        }
 
     def init_from_ckpt(self, path, ignore_keys=list()):
         sd = torch.load(path, map_location="cpu")["state_dict"]
@@ -80,9 +86,10 @@ class VQModel(pl.LightningModule):
 
     def get_input(self, batch, k):
         x = batch[k]
-        if len(x.shape) == 3:
-            x = x[..., None]
-        x = x.permute(0, 3, 1, 2).to(memory_format=torch.contiguous_format)
+        # if len(x.shape) == 3:
+        #     x = x[..., None]
+        # x = x.permute(0, 3, 1, 2).to(memory_format=torch.contiguous_format)
+        x = x.to(memory_format=torch.contiguous_format)
         return x.float()
 
     def on_fit_start(self):
@@ -93,6 +100,11 @@ class VQModel(pl.LightningModule):
             rank=self.global_rank if hasattr(self, "global_rank") else 0,
         )
 
+    def on_train_start(self):
+        if self.train_logger is not None:
+            self.train_logger.info(f"Model:\n{self}")
+            
+    
     def training_step(self, batch, batch_idx):
         # Get optimizers
         opt_ae, opt_disc = self.optimizers()

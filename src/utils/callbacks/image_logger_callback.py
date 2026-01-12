@@ -3,9 +3,9 @@ from PIL import Image
 import numpy as np
 import torch
 import torchvision
-import lightning as pl
 from lightning.pytorch.callbacks import Callback
 from lightning.pytorch.utilities.rank_zero import rank_zero_only
+from lightning.pytorch.loggers import WandbLogger, TensorBoardLogger
 
 class ImageLogger(Callback):
     def __init__(
@@ -15,8 +15,8 @@ class ImageLogger(Callback):
         self.batch_freq = batch_frequency
         self.max_images = max_images
         self.logger_log_images = {
-            pl.loggers.WandbLogger: self._wandb,
-            pl.loggers.TensorBoardLogger: self._testtube,
+            WandbLogger: self._wandb,
+            TensorBoardLogger: self._testtube,
         }
         self.log_steps = [2**n for n in range(int(np.log2(self.batch_freq)) + 1)]
         if not increase_log_steps:
@@ -84,14 +84,14 @@ class ImageLogger(Callback):
                     if self.clamp:
                         images[k] = torch.clamp(images[k], -1.0, 1.0)
 
-            self.log_local(
-                pl_module.logger.save_dir,
-                split,
-                images,
-                pl_module.global_step,
-                pl_module.current_epoch,
-                batch_idx,
-            )
+            # self.log_local(
+            #     pl_module.logger.save_dir,
+            #     split,
+            #     images,
+            #     pl_module.global_step,
+            #     pl_module.current_epoch,
+            #     batch_idx,
+            # )
 
             logger_log_images = self.logger_log_images.get(
                 logger, lambda *args, **kwargs: None

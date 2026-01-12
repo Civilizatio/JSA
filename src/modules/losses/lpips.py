@@ -25,7 +25,7 @@ class LPIPS(nn.Module):
             param.requires_grad = False
 
     def load_from_pretrained(self, name="vgg_lpips"):
-        ckpt = get_ckpt_path(name, "taming/modules/autoencoder/lpips")
+        ckpt = get_ckpt_path(name, "src/modules/losses/lpips")
         self.load_state_dict(torch.load(ckpt, map_location=torch.device("cpu")), strict=False)
         print("loaded pretrained LPIPS loss from {}".format(ckpt))
 
@@ -62,7 +62,9 @@ class LPIPS_CIFAR10(nn.Module):
         # Only reserve lower layers of VGG16 suitable for 32x32 images
         self.chns = [64, 128, 256]  # Reduced channels for lower layers
         
-        self.net = vgg16(pretrained=True, requires_grad=False)
+        self.net = vgg16(pretrained=False, requires_grad=False)
+        del self.net.slice4
+        del self.net.slice5
         # Modify the VGG16 architecture to accommodate 32x32 images
         # self.net.slice1 = nn.Sequential(*list(self.net.slice1.children())[:-1])  # Remove last layer of slice1
         # self.net.slice2 = nn.Sequential(*list(self.net.slice2.children())[:-1])  # Remove last layer of slice2
@@ -74,7 +76,7 @@ class LPIPS_CIFAR10(nn.Module):
             param.requires_grad = False
 
     def load_from_pretrained(self, name="vgg_lpips"):
-        ckpt = get_ckpt_path(name, "taming/modules/autoencoder/lpips")
+        ckpt = get_ckpt_path(name, "src/modules/losses/lpips")
         state_dict = torch.load(ckpt, map_location=torch.device("cpu"))
         # Filter state_dict to only include relevant layers for CIFAR-10 adaptation
         filtered_state_dict = {k: v for k, v in state_dict.items() if k in self.state_dict()}
@@ -102,17 +104,14 @@ class LPIPS_CIFAR10(nn.Module):
             feats0[kk], feats1[kk] = normalize_tensor(outs0[kk]), normalize_tensor(outs1[kk])
             diffs[kk] = (feats0[kk] - feats1[kk]) ** 2
         res = [spatial_average(lins[kk].model(diffs[kk]), keepdim=True) for kk in range(len(self.chns))]
-        val = res[0]
-        for l in range(1, len(self.chns)):
-            val += res[l]
-        return val
+        return sum(res)
 
 
 class ScalingLayer(nn.Module):
     def __init__(self):
         super(ScalingLayer, self).__init__()
-        self.register_buffer('shift', torch.Tensor([-.030, -.088, -.188])[None, :, None, None])
-        self.register_buffer('scale', torch.Tensor([.458, .448, .450])[None, :, None, None])
+        self.register_buffer('shift', torch.tensor([-.030, -.088, -.188], dtype=torch.float32)[None, :, None, None], persistent=False)
+        self.register_buffer('scale', torch.tensor([.458, .448, .450], dtype=torch.float32)[None, :, None, None], persistent=False)
 
     def forward(self, inp):
         return (inp - self.shift) / self.scale
@@ -128,9 +127,13 @@ class NetLinLayer(nn.Module):
 
 
 class vgg16(torch.nn.Module):
-    def __init__(self, requires_grad=False, pretrained=True):
+    def __init__(self, requires_grad=False, pretrained=False):
         super(vgg16, self).__init__()
-        vgg_pretrained_features = models.vgg16(pretrained=pretrained).features
+        if pretrained:
+            weights = models.VGG16_Weights.DEFAULT
+        else:
+            weights = None
+        vgg_pretrained_features = models.vgg16(weights=weights).features
         self.slice1 = torch.nn.Sequential()
         self.slice2 = torch.nn.Sequential()
         self.slice3 = torch.nn.Sequential()
@@ -158,6 +161,11 @@ class vgg16(torch.nn.Module):
         h_relu2_2 = h
         h = self.slice3(h)
         h_relu3_3 = h
+        
+        if not hasattr(self, "slice4"):
+            vgg_outputs = namedtuple("VggOutputs", ['relu1_2', 'relu2_2', 'relu3_3'])
+            return vgg_outputs(h_relu1_2, h_relu2_2, h_relu3_3)
+        
         h = self.slice4(h)
         h_relu4_3 = h
         h = self.slice5(h)
