@@ -35,9 +35,8 @@ class ImageLogger(Callback):
     @rank_zero_only
     def _testtube(self, pl_module, images, batch_idx, split):
         for k in images:
-            grid = torchvision.utils.make_grid(images[k])
-            grid = (grid + 1.0) / 2.0  # -1,1 -> 0,1; c,h,w
-
+            grid = torchvision.utils.make_grid(images[k], nrow=5, padding=2,normalize=True, value_range=(-1, 1))
+           
             tag = f"{split}/{k}"
             pl_module.logger.experiment.add_image(
                 tag, grid, global_step=pl_module.global_step
@@ -47,7 +46,7 @@ class ImageLogger(Callback):
     def log_local(self, save_dir, split, images, global_step, current_epoch, batch_idx):
         root = os.path.join(save_dir, "images", split)
         for k in images:
-            grid = torchvision.utils.make_grid(images[k], nrow=4)
+            grid = torchvision.utils.make_grid(images[k], nrow=5, padding=2,normalize=True, value_range=(-1, 1))
 
             grid = (grid + 1.0) / 2.0  # -1,1 -> 0,1; c,h,w
             grid = grid.transpose(0, 1).transpose(1, 2).squeeze(-1)

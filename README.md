@@ -50,6 +50,11 @@ PYTHONPATH=. python scripts/train.py test \
     --trainer.strategy=auto \
 
 ```
+```bash
+PYTHONPATH=. python scripts/train.py fit --config ./configs/jsa/categorical_prior_continuous_cifar10_conv.yaml
+```
+
+
 
 查看 TensorBoard 日志：
 
@@ -58,7 +63,7 @@ tensorboard --logdir=egs/continuous_mnist/categorical_prior/version_11 --port=60
 ```
 
 ``` bash
-tensorboard --logdir=egs/continuous_mnist/categorical_prior_conv/version_0 --port=6010
+tensorboard --logdir=egs/cifar10 --port=6013
 ```
 
 ``` bash

@@ -88,6 +88,14 @@ class ConvDecoder(nn.Module):
             ]
         )
         
+        self.conv_in = torch.nn.Conv2d(
+            in_channels=sum(self.embedding_dims),
+            out_channels=z_channels,
+            kernel_size=1,
+            stride=1,
+            padding=0,
+        ) # project to z_channels
+        
         self.decoder = Decoder(
             ch=ch,
             out_ch=out_ch,
@@ -128,7 +136,8 @@ class ConvDecoder(nn.Module):
         h_densed = torch.cat(h_embedded, dim=-1)  # [N, H, W, sum(emb_dim)]
         h = h_densed.permute(
             0, 3, 1, 2
-        ).contiguous()  # [B, H, W, z_channels] -> [B, z_channels, H, W]
+        ).contiguous()  # [B, H, W, sum(emb_dim)] -> [B, sum(emb_dim), H, W]
+        h = self.conv_in(h)  # [B, z_channels, H, W]
         x = self.decoder(h)  # [B, out_ch, H, W]
 
         # Rescale output to [0, 1] range if needed

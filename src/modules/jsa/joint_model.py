@@ -238,7 +238,6 @@ class JointModelCategoricalGaussian(BaseJointModel):
     def __init__(
         self,
         net: nn.Module,
-        num_latent_vars,
         sigma=0.1,
         sample_chunk_size=8,
     ):
@@ -257,6 +256,10 @@ class JointModelCategoricalGaussian(BaseJointModel):
     @property
     def num_categories(self):
         return self.net.num_categories
+    
+    @property
+    def num_latent_vars(self):
+        return self.net.num_latent_vars
 
     def get_last_layer_weight(self):
         return self.net.get_last_layer_weight()

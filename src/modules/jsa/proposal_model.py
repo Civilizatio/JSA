@@ -131,7 +131,7 @@ class ProposalModelCategorical(BaseProposalModel):
     ):
         super().__init__()
 
-        self.num_latent_vars = num_latent_vars
+        self._num_latent_vars = num_latent_vars
 
         if isinstance(num_categories, int):
             self._num_categories = [num_categories] * num_latent_vars
@@ -151,6 +151,14 @@ class ProposalModelCategorical(BaseProposalModel):
     @property
     def latent_dim(self):
         return self.total_num_categories
+    
+    @property
+    def num_categories(self):
+        return self._num_categories
+    
+    @property
+    def num_latent_vars(self):
+        return self._num_latent_vars
 
     def forward(self, x):
         """Compute distribution parameters (logits) for q(h|x).

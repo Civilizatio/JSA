@@ -7,6 +7,8 @@ from src.modules.vqvae.quantize import VectorQuantizer2 as VectorQuantizer
 from src.modules.losses.vqperceptual import VQLPIPSWithDiscriminator
 from src.utils.file_logger import get_file_logger
 
+import torch.distributed as dist
+from src.utils.codebook_utils import plot_codebook_usage_distribution
 
 class VQModel(LightningModule):
     def __init__(
@@ -42,6 +44,9 @@ class VQModel(LightningModule):
 
         self.train_logger = None
         self.automatic_optimization = False
+        
+        self.log_codebook_utilization_valid = True
+        self.log_codebook_utilization_test = False
         
         self.grad_norm_modules = {
             "encoder": self.encoder,
@@ -154,9 +159,12 @@ class VQModel(LightningModule):
         self.manual_backward(discloss)
         opt_disc.step()
 
+    
     def validation_step(self, batch, batch_idx):
         x = self.get_input(batch, self.image_key)
-        xrec, qloss = self(x)
+        quant, qloss, info = self.encode(x)
+        xrec = self.decode(quant)
+        
 
         # The loss function now returns multiple values, we only need the logs for validation
         _, _, log_dict_ae, log_dict_disc = self.loss(
@@ -189,6 +197,7 @@ class VQModel(LightningModule):
         )
 
         return self.log_dict
+    
 
     def configure_optimizers(self):
 
@@ -204,9 +213,14 @@ class VQModel(LightningModule):
         effective_batch_size = batch_size * n_gpus * accumulated_batches
         self.learning_rate = self.base_learning_rate * effective_batch_size
         lr = self.learning_rate
-        print(
-            f"Configuring optimizers with effective batch size {effective_batch_size} and learning rate {lr}"
-        )
+        if self.train_logger is not None:
+            self.train_logger.info(
+                f"Configuring optimizers with effective batch size {effective_batch_size} and learning rate {lr}"
+            )
+        else:
+            print(
+                f"Configuring optimizers with effective batch size {effective_batch_size} and learning rate {lr}"
+            )
 
         opt_ae = torch.optim.Adam(
             list(self.encoder.parameters())
@@ -236,6 +250,15 @@ class VQModel(LightningModule):
         log["inputs"] = x
         log["reconstructions"] = xrec
         return log
+    
+    def get_codebook_indices(self, batch):
+        x = self.get_input(batch, self.image_key)
+        _, _, info = self.encode(x)
+        return info[2]  # indices
+    
+    def get_codebook_size(self):
+        return self.quantizer.n_e
+
 
     def to_rgb(self, x):
         assert self.image_key == "segmentation"

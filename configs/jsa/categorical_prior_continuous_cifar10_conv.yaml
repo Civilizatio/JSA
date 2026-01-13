@@ -4,16 +4,16 @@ model:
   class_path: src.models.jsa.JSA
   init_args:
     joint_model:
-      class_path: src.models.components.joint_model.JointModelCategoricalGaussian
+      class_path: src.modules.jsa.joint_model.JointModelCategoricalGaussian
       init_args:
-        num_categories: [1024]
-        num_latent_vars: 1
-        embedding_dims: [12]
         sample_chunk_size: 1
         net:
-          class_path: src.models.components.networks.ConvDecoder
+          class_path: src.modules.jsa.jsa_adaptor.ConvDecoder
           init_args:
-            final_activation: tanh
+            num_categories: [1024]
+            num_latent_vars: 1
+            embedding_dims: [12]
+            final_activation: null
             ch: 64 
             out_ch: 3
             ch_mult: [1, 2, 4]
@@ -25,17 +25,17 @@ model:
             resamp_with_conv: true
             in_channels: null # not used in decoder
             resolution: 32
-            z_channels: 12 # should calculated based on embedding_dims and num_latent_vars
+            z_channels: 256 # should calculated based on embedding_dims and num_latent_vars
     proposal_model:
-      class_path: src.models.components.proposal_model.ProposalModelCategorical
+      class_path: src.modules.jsa.proposal_model.ProposalModelCategorical
       init_args:
         num_categories: [1024]
         num_latent_vars: 1
         net:
-          class_path: src.models.components.networks.ConvEncoder
+          class_path: src.modules.jsa.jsa_adaptor.ConvEncoder
           init_args:
             ch: 64
-            out_ch: null # not used in encoder
+            out_ch: 1024 # not used in encoder
             ch_mult: [1, 2, 4]
             num_res_blocks: 2
             attn_resolutions: []
@@ -45,7 +45,7 @@ model:
             resamp_with_conv: true
             in_channels: 3
             resolution: 32
-            z_channels: 1024 # should calculated based on num_categories and num_latent_vars
+            z_channels: 256 # should calculated based on num_categories and num_latent_vars
     sampler:
       _target_: src.samplers.misampler.MISampler
       use_cache: false # initial value, will be updated during training
@@ -61,10 +61,10 @@ model:
       #   disc_weight: 1.0
       #   disc_loss: hinge
     
-    lr_joint: 3e-4
-    lr_proposal: 3e-4
-    lr_discriminator: 1e-4
-    num_mis_steps: 20
+    base_lr_joint: 4.5e-06
+    base_lr_proposal: 4.5e-06
+    base_lr_discriminator: 4.5e-7
+    num_mis_steps: 15
     cache_start_epoch: 20000
 
     init_from_ckpt: null
@@ -81,8 +81,8 @@ model:
         _target_: src.utils.schedulers.SigmaScheduler
         max_val: 0.2
         min_val: 0.02
-        warmup_steps: 5000
-        total_steps: 20000 # if using epochs, make sure to set max_epochs in trainer
+        warmup_steps: 30000
+        total_steps: 50000 # if using epochs, make sure to set max_epochs in trainer
         mode: cosine
 
       adaptive_controller:
@@ -97,7 +97,7 @@ data:
   class_path: src.data.cifar10.CIFAR10DataModule
   init_args:
     root: ./data/cifar10
-    batch_size: 450
+    batch_size: 128
     num_workers: 4
 
 trainer:
@@ -113,7 +113,7 @@ trainer:
     #     filename: training.log
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
-        monitor: valid/nll
+        monitor: valid/recon_mse # 有点问题，可能需要改
         mode: min
         save_top_k: 1
         filename: best-checkpoint
@@ -122,16 +122,31 @@ trainer:
     - class_path: lightning.pytorch.callbacks.LearningRateMonitor
       init_args:
         logging_interval: step
-    - class_path: lightning.pytorch.callbacks.ModelSummary
-      init_args:
-        max_depth: 2
-    - class_path: src.utils.grad_norm_callback.GradientNormCallback
+    - class_path: src.utils.callbacks.grad_norm_callback.GradientNorm
       init_args:
         norm_type: 2
         log_every_n_steps: 1
 
-  max_epochs: 400
-  max_steps: 20000 # higher priority than max_epochs
+    - class_path: src.utils.callbacks.save_model_summary_callback.LogModelSummary
+      init_args:
+        max_depth: 4
+
+    - class_path: src.utils.callbacks.image_logger_callback.ImageLogger
+      init_args:
+        batch_frequency: 750
+        max_images: 25
+        clamp: true
+
+    - class_path: src.utils.callbacks.codebook_stats_callback.CodebookStats
+      init_args:
+        stage: "val"
+        log_prefix: "val"
+        plot: true
+        sort_by_counter: true
+        use_log_scale: false
+
+  max_epochs: 5000
+  max_steps: 50000 # higher priority than max_epochs
   accelerator: gpu
   devices: [4, 5, 6, 7]
   strategy: ddp_find_unused_parameters_true

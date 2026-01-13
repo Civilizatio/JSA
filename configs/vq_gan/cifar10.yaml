@@ -1,4 +1,4 @@
-seed_everything: 23
+seed_everything: 42
 
 model:
   class_path: src.models.vq_gan.VQModel
@@ -50,22 +50,22 @@ model:
         disc_in_channels: 3
         disc_num_layers: 2
         disc_ndf: 32
-        disc_start: 50000 # larger than max_steps, to disable for discriminator training
+        disc_start: 500000 # larger than max_steps, to disable for discriminator training
         disc_weight: 0.8
         codebook_weight: 1.0
-        perceptual_weight: 1.0
-        pixel_loss: "l1"
+        perceptual_weight: 0.0
+        pixel_loss: "l2"
 
     image_key: "image"
-    base_learning_rate: 2e-4
+    base_learning_rate: 4.5e-06
     ckpt_path: null
 
 data:
   class_path: src.data.cifar10.CIFAR10DataModule
   init_args:
     root: ./data/cifar10
-    batch_size: 64
-    num_workers: 8
+    batch_size: 128
+    num_workers: 4
 
 trainer:
   logger:
@@ -89,7 +89,7 @@ trainer:
     - class_path: src.utils.callbacks.image_logger_callback.ImageLogger
       init_args:
         batch_frequency: 750
-        max_images: 4
+        max_images: 25
         clamp: true
 
     - class_path: src.utils.callbacks.grad_norm_callback.GradientNorm
@@ -101,9 +101,16 @@ trainer:
       init_args:
         max_depth: 2
 
+    - class_path: src.utils.callbacks.codebook_stats_callback.CodebookStats
+      init_args:
+        stage: "val"
+        log_prefix: "val"
+        plot: true
+        sort_by_counter: true
+        use_log_scale: false
   accelerator: gpu
   devices: [4, 5, 6, 7]
   strategy: ddp_find_unused_parameters_true
-  max_epochs: 400
-  max_steps: 20000 # higher priority than max_epochs
+  max_epochs: 5000
+  max_steps: 50000 # higher priority than max_epochs
   precision: 32

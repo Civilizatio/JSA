@@ -17,6 +17,11 @@ from src.utils.file_logger import get_file_logger
 from src.modules.losses.jsa_gan import JSAGANLoss
 import math
 
+DATASET_KEY = {
+    "image_key": "image",
+    "index_key": "index",
+    "label_key": "label",
+}
 
 class JSA(LightningModule):
     def __init__(
@@ -25,9 +30,9 @@ class JSA(LightningModule):
         proposal_model: BaseProposalModel,
         sampler,
         gan_loss: JSAGANLoss = None,
-        lr_joint=1e-3,
-        lr_proposal=1e-3,
-        lr_discriminator=1e-4,
+        base_lr_joint=1e-3,
+        base_lr_proposal=1e-3,
+        base_lr_discriminator=1e-4,
         num_mis_steps=3,
         cache_start_epoch=0,
         init_from_ckpt: str = None,
@@ -48,9 +53,12 @@ class JSA(LightningModule):
 
         self.gan_loss: JSAGANLoss = gan_loss
         self.automatic_optimization = False
-        self.lr_joint = lr_joint
-        self.lr_proposal = lr_proposal
-        self.lr_discriminator = lr_discriminator
+        self.base_lr_joint = base_lr_joint
+        self.base_lr_proposal = base_lr_proposal
+        self.base_lr_discriminator = base_lr_discriminator
+        self.lr_joint = base_lr_joint
+        self.lr_proposal = base_lr_proposal
+        self.lr_discriminator = base_lr_discriminator
         self.num_mis_steps = num_mis_steps
         self.cache_start_epoch = cache_start_epoch
 
@@ -59,16 +67,13 @@ class JSA(LightningModule):
         self.init_strict = init_strict
         self._weights_loaded = False  # guard to ensure weights are loaded only once
 
+        self.dataset_key = DATASET_KEY
         self.sigma_controller: SigmaController | None = (
             instantiate(sigma_controller) if sigma_controller is not None else None
         )
 
         self.train_logger = None  # Not initialized yet
 
-        # For visualization during validation
-        self.validation_step_outputs = []
-
-        self.log_codebook_utilization_valid = True
         self.log_codebook_utilization_test = False
         
         self.grad_norm_modules = {
@@ -79,6 +84,12 @@ class JSA(LightningModule):
     def setup(self, stage=None):
         device = self.device
         self.sampler.to(device)
+        
+    def get_input(self, batch, dataset_key):
+        data = batch[dataset_key["image_key"]]
+        idx = batch[dataset_key["index_key"]]
+        return data, idx
+        
 
     def on_fit_start(self):
         """Warm start or resume from checkpoint if specified
@@ -134,19 +145,30 @@ class JSA(LightningModule):
 
     def forward(self, x, idx=None):
 
-        if idx is not None:
-            h = self.sampler.sample(
-                x, idx=idx, num_steps=self.num_mis_steps
-            )  # [B, 1, ..., num_latent_vars]
-        else:  # use proposal model directly
-            h = self.proposal_model.sample_latent(
-                x, num_samples=1
-            )  # [B, 1, ..., num_latent_vars]
-        h = h.squeeze(1)  # [B, ..., num_latent_vars]
-        x_hat = self.joint_model.sample(h=h, num_samples=1).squeeze(1)  # [B, C, H, W]
+        h = self.proposal_model.encode(x)
+        x_hat = self.joint_model.decode(h)
         return x_hat
 
     def configure_optimizers(self):
+        
+        batch_size = self.trainer.datamodule.batch_size if self.trainer and self.trainer.datamodule else 1
+        num_devices = self.trainer.num_devices if self.trainer.num_devices else 1
+        accumulated_batches = self.trainer.accumulate_grad_batches if self.trainer else 1
+        effective_batch_size = batch_size * num_devices * accumulated_batches
+        self.lr_joint = self.base_lr_joint * effective_batch_size
+        self.lr_proposal = self.base_lr_proposal * effective_batch_size
+        self.lr_discriminator = self.base_lr_discriminator * effective_batch_size
+        
+        if self.train_logger is not None:
+            self.train_logger.info(
+                f"Configuring optimizers with effective batch size {effective_batch_size}, lr_joint {self.lr_joint}, lr_proposal {self.lr_proposal}, lr_discriminator {self.lr_discriminator}"
+            )
+        else:
+            print(
+                f"Configuring optimizers with effective batch size {effective_batch_size}, lr_joint {self.lr_joint}, lr_proposal {self.lr_proposal}, lr_discriminator {self.lr_discriminator}"
+            )
+        
+        
         opt_joint = torch.optim.Adam(self.joint_model.parameters(), lr=self.lr_joint)
         opt_proposal = torch.optim.Adam(
             self.proposal_model.parameters(), lr=self.lr_proposal
@@ -189,8 +211,7 @@ class JSA(LightningModule):
 
     def training_step(self, batch, batch_idx):
 
-        x = batch["image"]
-        idx = batch["index"]
+        x, idx = self.get_input(batch, self.dataset_key)  # x: [B, C, H, W], idx: [B,]
 
         # MISampling step
         h = self.sampler.sample(
@@ -277,89 +298,13 @@ class JSA(LightningModule):
 
     # ========================= Validation =========================
 
-    def on_validation_start(self):
-        # For validation
-        if self.log_codebook_utilization_valid:
-            self.num_latent_vars = self.proposal_model.num_latent_vars
-            self.num_categories = self.proposal_model._num_categories
-            self.codebook_size = math.prod(self.num_categories)
-            self.codebook_counter = torch.zeros(
-                self.codebook_size, dtype=torch.long, device=self.device
-            )
-
     def validation_step(self, batch, batch_idx):
-        x = batch["image"]
-        idx = batch["index"]  # x: [B, C, H, W], idx: [B,]
+        x, idx = self.get_input(batch, self.dataset_key)  # x: [B, C, H, W], idx: [B,]
 
-        nll = -self.get_nll(x, idx=idx)  # [B,]
+        nll, recon_mse = self.get_nll(x, idx=idx)  # [B,]
 
-        self.log("valid/nll", nll.mean(), prog_bar=True, sync_dist=True)
-
-        if batch_idx == 0:
-            self.validation_step_outputs.append(x[:25])
-
-        if self.log_codebook_utilization_valid:
-            # Update codebook counter
-            h = self.proposal_model.encode(x)
-            h = h.view(-1, self.num_latent_vars)  # [B*H*W, num_latent_vars]
-            # Calculate 1D indices from multi-dimensional categorical latent variables
-            indices = encode_multidim_to_index(h, self.num_categories)  # [B]
-            self.codebook_counter.index_add_(
-                0, indices, torch.ones_like(indices, dtype=torch.long)
-            )
-
-        return {"valid_img": x[:25]}
-
-    def on_validation_epoch_end(self):
-        # Show some reconstruction results
-        x = self.validation_step_outputs[0]  # [16, D]
-        x_hat = self.forward(x)  # [16, D]
-
-        # show original images
-        grid_orig = torchvision.utils.make_grid(x, nrow=5)
-        self.logger.experiment.add_image(
-            "valid/original_images", grid_orig, self.current_epoch
-        )
-        # show reconstructed images
-        grid_recon = torchvision.utils.make_grid(x_hat, nrow=5)
-        self.logger.experiment.add_image(
-            "valid/reconstructed_images", grid_recon, self.current_epoch
-        )
-
-        self.validation_step_outputs.clear()  # free memory
-
-        if self.log_codebook_utilization_valid:
-            # Compute and log codebook utilization
-            if dist.is_available() and dist.is_initialized():
-                # gather codebook_counter from all ranks
-                dist.all_reduce(self.codebook_counter, op=dist.ReduceOp.SUM)
-
-            used_codewords = torch.sum(self.codebook_counter > 0).item()
-            utilization_rate = used_codewords / self.codebook_size * 100
-            self.log(
-                "valid/codebook_utilization",
-                utilization_rate,
-                prog_bar=True,
-                sync_dist=True,  # ensure correct logging in distributed setting
-            )
-
-            # Plot codebook usage distribution
-            fig_dict, _ = plot_codebook_usage_distribution(
-                codebook_counter=self.codebook_counter.cpu().numpy(),
-                codebook_size=self.codebook_size,
-                tag_prefix="valid",
-                save_to_disk=False,
-                use_log_scale=False,
-            )
-            for tag, fig in fig_dict.items():
-                self.logger.experiment.add_figure(
-                    tag,
-                    fig,
-                    self.current_epoch,
-                )
-
-            # Reset codebook counter for next epoch
-            self.codebook_counter.zero_()
+        self.log("valid/nll", -nll.mean(), prog_bar=True, sync_dist=True)
+        self.log("valid/recon_mse", recon_mse.mean(), prog_bar=True, sync_dist=True)
 
     @torch.no_grad()
     def get_nll(self, x, idx):
@@ -376,97 +321,12 @@ class JSA(LightningModule):
         ) - self.proposal_model.log_conditional_prob(h, x).mean(
             dim=1
         )  # [B,]
+        
+        x_rec = self.forward(x, idx=idx)
+        recon_mse = torch.mean((x - x_rec) ** 2)
 
-        return log_nll.detach().cpu().numpy()
-
-    # ========================= Testing =========================
-
-    def on_test_start(self):
-        # For testing
-
-        self.num_latent_vars = self.proposal_model.num_latent_vars
-        self.num_categories = self.proposal_model._num_categories
-        self.codebook_size = math.prod(self.num_categories)
-        self.codebook_counter = torch.zeros(
-            self.codebook_size, dtype=torch.long, device=self.device
-        )
-        self.codebook_multi_dim_indices = torch.zeros(
-            (self.codebook_size, self.num_latent_vars),
-            dtype=torch.long,
-            device=self.device,
-        )
-        self.mse_error = torch.tensor(0.0, device=self.device)
-        self.mse_count = 0
-
-    @torch.no_grad()
-    def test_step(self, batch, batch_idx):
-        x = batch["image"]
-        idx = batch["index"]  # x: [B, C, H, W], idx: [B,]
-
-        nll = -self.get_nll(x, idx=idx)
-
-        self.log("test/nll", nll.mean(), prog_bar=True, sync_dist=True)
-
-        # Update codebook counter
-        h = self.proposal_model.encode(x)  # [B, ..., num_latent_vars]
-        # Calculate 1D indices from multi-dimensional categorical latent variables
-        x_hat = self.joint_model.decode(h)
-
-        mse = torch.mean((x - x_hat) ** 2, dim=[1, 2, 3])  # [B,]
-        self.log("test/mse", mse.mean(), prog_bar=True, sync_dist=True)
-        self.mse_error += mse.sum()
-        self.mse_count += x.size(0)
-
-        # Calculate indices
-        indices = encode_multidim_to_index(h, self.num_categories)  # [B]
-
-        self.codebook_counter.index_add_(
-            0, indices, torch.ones_like(indices, dtype=torch.long)
-        )
-        self.codebook_multi_dim_indices[indices] = h.long()
-
-    def on_test_epoch_end(self):
-        if dist.is_available() and dist.is_initialized():
-            # gather codebook_counter from all ranks
-            dist.all_reduce(self.codebook_counter, op=dist.ReduceOp.SUM)
-
-        used_codewords = torch.sum(self.codebook_counter > 0).item()
-        utilization_rate = used_codewords / self.codebook_size * 100
-        self.log(
-            "test/codebook_utilization",
-            utilization_rate,
-            prog_bar=True,
-            sync_dist=True,  # ensure correct logging in distributed setting
-        )
-        self.log("test/used_codewords", used_codewords, prog_bar=True, sync_dist=True)
-
-        # Plot codebook usage distribution
-        fig_dict = plot_codebook_usage_distribution(
-            codebook_counter=self.codebook_counter.cpu().numpy(),
-            codebook_size=self.codebook_size,
-            used_codewords=used_codewords,
-            utilization_rate=utilization_rate,
-            tag_prefix="test",
-            save_to_disk=False,
-        )
-        for tag, fig in fig_dict.items():
-            self.logger.experiment.add_figure(
-                tag,
-                fig,
-                self.current_epoch,
-            )
-
-        # Reset codebook counter for next epoch
-        self.codebook_counter.zero_()
-        self.codebook_multi_dim_indices.zero_()
-
-        # Log final MSE
-        final_mse = self.mse_error / self.mse_count
-        self.log("test/final_mse", final_mse, prog_bar=True, sync_dist=True)
-
-        # Reset MSE accumulators
-        self.mse_error = 0.0
-        self.mse_count = 0
+        return log_nll.detach().cpu().numpy(), recon_mse.detach().cpu().numpy()
+    
 
     # ========================= Checkpointing =========================
 
@@ -493,3 +353,24 @@ class JSA(LightningModule):
                 # we expect that checkpoint was saved from rank0 and all ranks loaded same dict,
                 # but ensure everyone has the same in distributed environment
                 self.sampler.sync_cache()
+                
+    # ========================= Callback Utilities =========================
+    
+    def log_images(self, batch, **kwargs):
+        log = dict()
+        x, _ = self.get_input(batch, self.dataset_key)
+        x_rec = self.forward(x)
+        log["inputs"] = x
+        log["reconstructions"] = x_rec
+        return log
+    
+    def get_codebook_indices(self, batch):
+        x, _ = self.get_input(batch, self.dataset_key)
+        h = self.proposal_model.encode(x)
+        h = h.view(-1, self.proposal_model.num_latent_vars)
+        indices = encode_multidim_to_index(h, self.proposal_model.num_categories)
+        return indices
+    
+    def get_codebook_size(self):
+        return math.prod(self.proposal_model.num_categories)
+    
