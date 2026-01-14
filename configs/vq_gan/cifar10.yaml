@@ -64,7 +64,7 @@ data:
   class_path: src.data.cifar10.CIFAR10DataModule
   init_args:
     root: ./data/cifar10
-    batch_size: 128
+    batch_size: 450
     num_workers: 4
 
 trainer:
@@ -80,7 +80,7 @@ trainer:
         filename: "{epoch:06}"
         save_last: true
         save_top_k: 3
-        monitor: val/rec_loss
+        monitor: valid/rec_loss
 
     - class_path: lightning.pytorch.callbacks.LearningRateMonitor
       init_args:
@@ -103,8 +103,8 @@ trainer:
 
     - class_path: src.utils.callbacks.codebook_stats_callback.CodebookStats
       init_args:
-        stage: "val"
-        log_prefix: "val"
+        stage: "valid"
+        log_prefix: "valid"
         plot: true
         sort_by_counter: true
         use_log_scale: false

@@ -88,13 +88,19 @@ class ConvDecoder(nn.Module):
             ]
         )
         
-        self.conv_in = torch.nn.Conv2d(
-            in_channels=sum(self.embedding_dims),
-            out_channels=z_channels,
-            kernel_size=1,
-            stride=1,
-            padding=0,
-        ) # project to z_channels
+        if sum(self.embedding_dims) < z_channels:
+            print(
+                f"Warning: sum of embedding_dims {sum(self.embedding_dims)} is less than or equal to z_channels {z_channels}. Consider increasing embedding_dims."
+            )
+            self.conv_in = torch.nn.Conv2d(
+                in_channels=sum(self.embedding_dims),
+                out_channels=z_channels,
+                kernel_size=1,
+                stride=1,
+                padding=0,
+            ) # project to z_channels
+        else:
+            self.conv_in = torch.nn.Identity()
         
         self.decoder = Decoder(
             ch=ch,

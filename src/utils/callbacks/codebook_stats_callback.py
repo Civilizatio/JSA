@@ -16,13 +16,13 @@ class CodebookStats(Callback):
 
     def __init__(
         self,
-        stage: str = "val",  # "val" or "test"
+        stage: str = "valid",  # "valid" or "test"
         log_prefix: str | None = None,
         plot: bool = True,
         sort_by_counter: bool = True,
         use_log_scale: bool = False,
     ):
-        assert stage in ["val", "test"]
+        assert stage in ["valid", "test"]
         self.stage = stage
         self.log_prefix = log_prefix or stage
         self.plot = plot
@@ -47,7 +47,7 @@ class CodebookStats(Callback):
     # hooks
     # -------------------------
     def on_validation_start(self, trainer, pl_module):
-        if self.stage != "val":
+        if self.stage != "valid":
             return
         self._reset_counter(pl_module)
 
@@ -71,7 +71,7 @@ class CodebookStats(Callback):
         )
 
     def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
-        if self.stage != "val":
+        if self.stage != "valid":
             return
         self._accumulate(pl_module, batch)
 
@@ -100,7 +100,7 @@ class CodebookStats(Callback):
         )
 
     def on_validation_epoch_end(self, trainer, pl_module):
-        if self.stage != "val":
+        if self.stage != "valid":
             return
         self._finalize(pl_module)
 

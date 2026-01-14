@@ -244,8 +244,8 @@ class MISampler(BaseSampler):
             x, h_new, h_old
         )  # [batch_size, num_samples]
 
-        u = torch.rand_like(accept_prob)
-        accept = (u < accept_prob).float()  # [batch_size, num_samples]
+        accept = torch.rand_like(accept_prob) < accept_prob  # [batch_size, num_samples]
+        accept = accept.float()
         self._accept_cnt += accept.sum()
         self._total_cnt += accept.numel()
 
@@ -286,12 +286,22 @@ class MISampler(BaseSampler):
         #     )
 
         if parallel:
-            return self._sample_parallel(x, idx=idx, num_steps=num_steps, return_all=return_all)
+            return self._sample_parallel(
+                x, idx=idx, num_steps=num_steps, return_all=return_all
+            )
         else:
-            assert not return_all, "return_all is only supported in parallel sampling."
+            if return_all:
+                h_list = []
             h_old = None
             for _ in range(num_steps):
                 h_old = self.step(x, idx=idx, h_old=h_old)
+                if return_all:
+                    h_list.append(h_old)
+            if return_all:
+                h_all = torch.cat(
+                    h_list, dim=1
+                )  # [batch_size, num_steps, ..., num_latent_vars]
+                return h_all
 
         return h_old
 
@@ -348,9 +358,9 @@ class MISampler(BaseSampler):
         cur_idx = torch.zeros(
             x.shape[0], dtype=torch.long, device=x.device
         )  # [B, ], current index in h_new_all for each sample
-        
+
         if return_all:
-            traj_idxes = [] # length should be `num_steps`
+            traj_idxes = []  # length should be `num_steps`
 
         # Sequentially compute acceptance probabilities and update samples
         for step in range(num_steps):
@@ -381,14 +391,14 @@ class MISampler(BaseSampler):
             traj_idxes = torch.stack(traj_idxes, dim=1)  # [B, num_steps+1]
             h_result = h_new_all.gather(
                 1,
-                traj_idxes.view(x.shape[0], num_steps, *([1] * (h_new_all.dim() - 2))).expand(
-                    -1, -1, *h_new_all.shape[2:]
-                ),
+                traj_idxes.view(
+                    x.shape[0], num_steps, *([1] * (h_new_all.dim() - 2))
+                ).expand(-1, -1, *h_new_all.shape[2:]),
             )  # [B, num_steps, ..., num_latent_vars]
-            
+
             h_final = h_result[:, -1:, ...]  # [B, 1, ..., num_latent_vars]
         else:
-        
+
             h_result = h_new_all.gather(
                 1,
                 cur_idx.view(-1, 1, *([1] * (h_new_all.dim() - 2))).expand(

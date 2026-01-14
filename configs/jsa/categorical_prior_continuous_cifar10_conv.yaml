@@ -12,7 +12,7 @@ model:
           init_args:
             num_categories: [1024]
             num_latent_vars: 1
-            embedding_dims: [12]
+            embedding_dims: [256]
             final_activation: null
             ch: 64 
             out_ch: 3
@@ -61,10 +61,10 @@ model:
       #   disc_weight: 1.0
       #   disc_loss: hinge
     
-    base_lr_joint: 4.5e-06
-    base_lr_proposal: 4.5e-06
+    base_lr_joint: 5.86e-07
+    base_lr_proposal: 5.86e-07
     base_lr_discriminator: 4.5e-7
-    num_mis_steps: 15
+    num_mis_steps: 20
     cache_start_epoch: 20000
 
     init_from_ckpt: null
@@ -81,7 +81,7 @@ model:
         _target_: src.utils.schedulers.SigmaScheduler
         max_val: 0.2
         min_val: 0.02
-        warmup_steps: 30000
+        warmup_steps: 20000
         total_steps: 50000 # if using epochs, make sure to set max_epochs in trainer
         mode: cosine
 
@@ -139,8 +139,8 @@ trainer:
 
     - class_path: src.utils.callbacks.codebook_stats_callback.CodebookStats
       init_args:
-        stage: "val"
-        log_prefix: "val"
+        stage: "valid"
+        log_prefix: "valid"
         plot: true
         sort_by_counter: true
         use_log_scale: false
@@ -148,7 +148,7 @@ trainer:
   max_epochs: 5000
   max_steps: 50000 # higher priority than max_epochs
   accelerator: gpu
-  devices: [4, 5, 6, 7]
+  devices: [2,3,4,5]
   strategy: ddp_find_unused_parameters_true
   # strategy: auto
   precision: 32

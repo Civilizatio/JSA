@@ -173,7 +173,7 @@ class VQModel(LightningModule):
             xrec,
             self.global_step,
             last_layer=self.get_last_layer(),
-            split="val",
+            split="valid",
         )
 
         batch_size = x.shape[0]
@@ -317,10 +317,10 @@ class VQNoDiscModel(VQModel):
         x = self.get_input(batch, self.image_key)
         xrec, qloss = self(x)
 
-        loss, log_dict = self.loss(qloss, x, xrec, self.global_step, split="val")
+        loss, log_dict = self.loss(qloss, x, xrec, self.global_step, split="valid")
 
         self.log(
-            "val/loss", loss, prog_bar=True, logger=True, on_step=False, on_epoch=True
+            "valid/loss", loss, prog_bar=True, logger=True, on_step=False, on_epoch=True
         )
         self.log_dict(
             log_dict, prog_bar=False, logger=True, on_step=False, on_epoch=True

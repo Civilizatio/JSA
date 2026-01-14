@@ -23,6 +23,28 @@ DATASET_KEY = {
     "label_key": "label",
 }
 
+
+def report(tag):
+    torch.cuda.synchronize()
+    print(
+        tag,
+        "allocated:",
+        torch.cuda.memory_allocated() / 1024**2,
+        "MB | reserved:",
+        torch.cuda.memory_reserved() / 1024**2,
+        "MB",
+    )
+
+def cuda_probe(tag):
+    torch.cuda.synchronize()
+    print(
+        f"[{tag}] "
+        f"allocated={torch.cuda.memory_allocated() / 1024**2:.1f} MB | "
+        f"max_allocated={torch.cuda.max_memory_allocated() / 1024**2:.1f} MB | "
+        f"reserved={torch.cuda.memory_reserved() / 1024**2:.1f} MB"
+    )
+
+
 class JSA(LightningModule):
     def __init__(
         self,
@@ -208,16 +230,17 @@ class JSA(LightningModule):
 
         # Reset acceptance stats
         self.sampler.reset_acceptance_stats()
-
+    
     def training_step(self, batch, batch_idx):
 
         x, idx = self.get_input(batch, self.dataset_key)  # x: [B, C, H, W], idx: [B,]
 
         # MISampling step
         h = self.sampler.sample(
-            x, idx=idx, num_steps=self.num_mis_steps, parallel=True, return_all=True
+            x, idx=idx, num_steps=self.num_mis_steps, parallel=False, return_all=False
         )  # [B, num_samples, ..., num_latent_vars]
-
+        
+        # torch.cuda.empty_cache()
         # Optimizers
         if self.gan_loss is not None:
             opt_joint, opt_proposal, opt_discriminator = self.optimizers()
@@ -228,30 +251,30 @@ class JSA(LightningModule):
 
         # Update joint model
         opt_joint.zero_grad()
-        nll_loss, x_hat = self.joint_model.get_loss(
-            x, h, return_forward=True, backward_fn=self.manual_backward
+        nll_loss = self.joint_model.get_loss(
+            x, h, return_forward=False, backward_fn=self.manual_backward
         )
         total_loss_joint = nll_loss  # only for logging
-        if self.gan_loss is not None:
+        # if self.gan_loss is not None:
 
-            last_layer = (
-                self.joint_model.get_last_layer_weight()
-                if hasattr(self.joint_model, "get_last_layer_weight")
-                else None
-            )
+        #     last_layer = (
+        #         self.joint_model.get_last_layer_weight()
+        #         if hasattr(self.joint_model, "get_last_layer_weight")
+        #         else None
+        #     )
 
-            g_loss, g_log = self.gan_loss(
-                inputs=x,
-                reconstructions=x_hat,  # [B, C, H, W]
-                optimizer_idx=0,
-                global_step=self.global_step,
-                last_layer=last_layer,
-                nll_loss=nll_loss,
-                split="train",
-            )
-            total_loss_joint = total_loss_joint + g_loss
-            self.manual_backward(g_loss)
-            self.log_dict(g_log, prog_bar=False)
+        #     g_loss, g_log = self.gan_loss(
+        #         inputs=x,
+        #         reconstructions=x_hat,  # [B, C, H, W]
+        #         optimizer_idx=0,
+        #         global_step=self.global_step,
+        #         last_layer=last_layer,
+        #         nll_loss=nll_loss,
+        #         split="train",
+        #     )
+        #     total_loss_joint = total_loss_joint + g_loss
+        #     self.manual_backward(g_loss)
+        #     self.log_dict(g_log, prog_bar=False)
 
         opt_joint.step()
 
@@ -262,18 +285,18 @@ class JSA(LightningModule):
         opt_proposal.step()
 
         # ============= Update Discriminator =============
-        if self.gan_loss is not None:
-            opt_discriminator.zero_grad()
-            d_loss, d_log = self.gan_loss(
-                inputs=x,
-                reconstructions=x_hat.detach(),  # detach to avoid gradients to generator
-                optimizer_idx=1,
-                global_step=self.global_step,
-                split="train",
-            )
-            self.manual_backward(d_loss)
-            opt_discriminator.step()
-            self.log_dict(d_log, prog_bar=False)
+        # if self.gan_loss is not None:
+        #     opt_discriminator.zero_grad()
+        #     d_loss, d_log = self.gan_loss(
+        #         inputs=x,
+        #         reconstructions=x_hat.detach(),  # detach to avoid gradients to generator
+        #         optimizer_idx=1,
+        #         global_step=self.global_step,
+        #         split="train",
+        #     )
+        #     self.manual_backward(d_loss)
+        #     opt_discriminator.step()
+        #     self.log_dict(d_log, prog_bar=False)
 
         self.log("train/loss_joint_nll", nll_loss, prog_bar=True)
         self.log("train/loss_proposal", loss_proposal, prog_bar=True)
@@ -311,10 +334,10 @@ class JSA(LightningModule):
 
         # MISampling step
         h = self.sampler.sample(
-            x, idx=idx, num_steps=self.num_mis_steps, parallel=True, return_all=True
+            x, idx=idx, num_steps=self.num_mis_steps, parallel=False, return_all=True
         )  # [B, num_samples, ..., num_latent_vars]
         # h = h.squeeze(1)  # [B, ..., num_latent_vars]
-
+       
         # log p(x) ~ log p(x,h) - log q(h|x)
         log_nll = self.joint_model.log_joint_prob_multiple_samples(x, h).mean(
             dim=1
