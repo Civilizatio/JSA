@@ -2,7 +2,7 @@ import torch
 import torch.nn.functional as F
 from lightning.pytorch import LightningModule
 
-from src.modules.networks import Encoder, Decoder
+from src.modules.vqvae.vq_adaptor import ConvEncoder, ConvDecoder
 from src.modules.vqvae.quantize import VectorQuantizer2 as VectorQuantizer
 from src.modules.losses.vqperceptual import VQLPIPSWithDiscriminator
 from src.utils.file_logger import get_file_logger
@@ -13,8 +13,8 @@ from src.utils.codebook_utils import plot_codebook_usage_distribution
 class VQModel(LightningModule):
     def __init__(
         self,
-        encoder: Encoder,
-        decoder: Decoder,
+        encoder: ConvEncoder,
+        decoder: ConvDecoder,
         loss: VQLPIPSWithDiscriminator,
         quantizer: VectorQuantizer,
         base_learning_rate=2e-4,
@@ -26,8 +26,8 @@ class VQModel(LightningModule):
     ):
         super().__init__()
         self.image_key = image_key
-        self.encoder: Encoder = encoder
-        self.decoder: Decoder = decoder
+        self.encoder: ConvEncoder = encoder
+        self.decoder: ConvDecoder = decoder
         self.loss: VQLPIPSWithDiscriminator = loss
         self.quantizer: VectorQuantizer = quantizer
         self.base_learning_rate = base_learning_rate
@@ -235,7 +235,7 @@ class VQModel(LightningModule):
         return [opt_ae, opt_disc], []
 
     def get_last_layer(self):
-        return self.decoder.conv_out.weight
+        return self.decoder.get_last_layer_weight()
 
     def log_images(self, batch, **kwargs):
         log = dict()

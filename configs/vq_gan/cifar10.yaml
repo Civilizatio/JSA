@@ -4,7 +4,7 @@ model:
   class_path: src.models.vq_gan.VQModel
   init_args:
     encoder:
-      class_path: src.modules.networks.Encoder
+      class_path: src.modules.vqvae.vq_adaptor.ConvEncoder
       init_args:
         ch: 64
         ch_mult: [1, 2, 4]
@@ -19,7 +19,7 @@ model:
         dropout: 0.0
         resamp_with_conv: true
     decoder:
-      class_path: src.modules.networks.Decoder
+      class_path: src.modules.vqvae.vq_adaptor.ConvDecoder
       init_args:
         ch: 64
         ch_mult: [1, 2, 4]
@@ -32,6 +32,7 @@ model:
         attn_resolutions: []
         dropout: 0.0
         resamp_with_conv: true
+        final_activation: tanh
 
     quantizer:
       class_path: src.modules.vqvae.quantize.VectorQuantizer2
@@ -53,7 +54,7 @@ model:
         disc_start: 500000 # larger than max_steps, to disable for discriminator training
         disc_weight: 0.8
         codebook_weight: 1.0
-        perceptual_weight: 0.0
+        perceptual_weight: 1.0
         pixel_loss: "l2"
 
     image_key: "image"
@@ -64,7 +65,7 @@ data:
   class_path: src.data.cifar10.CIFAR10DataModule
   init_args:
     root: ./data/cifar10
-    batch_size: 450
+    batch_size: 128
     num_workers: 4
 
 trainer:

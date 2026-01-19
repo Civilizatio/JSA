@@ -13,7 +13,7 @@ model:
             num_categories: [1024]
             num_latent_vars: 1
             embedding_dims: [256]
-            final_activation: null
+            final_activation: tanh
             ch: 64 
             out_ch: 3
             ch_mult: [1, 2, 4]
@@ -61,10 +61,10 @@ model:
       #   disc_weight: 1.0
       #   disc_loss: hinge
     
-    base_lr_joint: 5.86e-07
-    base_lr_proposal: 5.86e-07
-    base_lr_discriminator: 4.5e-7
-    num_mis_steps: 20
+    base_lr_joint: 4.5e-07
+    base_lr_proposal: 4.5e-07
+    base_lr_discriminator: 1.86e-07
+    num_mis_steps: 10
     cache_start_epoch: 20000
 
     init_from_ckpt: null
@@ -81,8 +81,9 @@ model:
         _target_: src.utils.schedulers.SigmaScheduler
         max_val: 0.2
         min_val: 0.02
-        warmup_steps: 20000
+        warmup_steps: 10000
         total_steps: 50000 # if using epochs, make sure to set max_epochs in trainer
+        hold_steps: 10000
         mode: cosine
 
       adaptive_controller:
@@ -113,11 +114,12 @@ trainer:
     #     filename: training.log
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
-        monitor: valid/recon_mse # 有点问题，可能需要改
+        monitor: valid/recon_mse 
         mode: min
-        save_top_k: 1
-        filename: best-checkpoint
+        save_top_k: 3
+        filename: "{epoch:06}"
         save_last: true
+
  
     - class_path: lightning.pytorch.callbacks.LearningRateMonitor
       init_args:
@@ -148,7 +150,7 @@ trainer:
   max_epochs: 5000
   max_steps: 50000 # higher priority than max_epochs
   accelerator: gpu
-  devices: [2,3,4,5]
+  devices: [4,5,6,7]
   strategy: ddp_find_unused_parameters_true
   # strategy: auto
   precision: 32

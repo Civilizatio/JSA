@@ -113,5 +113,5 @@ class ImageLogger(Callback):
         self.log_img(pl_module, batch, batch_idx, split="train")
 
     def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
-        self.log_img(pl_module, batch, batch_idx, split="val")
+        self.log_img(pl_module, batch, batch_idx, split="valid")
 

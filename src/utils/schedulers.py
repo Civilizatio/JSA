@@ -17,6 +17,7 @@ class SigmaScheduler:
         min_val: float,
         warmup_steps: int,
         total_steps: int,
+        hold_steps: int = 0,
         mode: str = "cosine",  # "linear" | "cosine" | "exponential"
         eps: float = 1e-8,
     ):
@@ -25,25 +26,26 @@ class SigmaScheduler:
         self.min_val = min_val
         self.warmup_steps = warmup_steps
         self.total_steps = total_steps
+        self.hold_steps = hold_steps
         self.mode = mode
         self.eps = eps
         
-        self.last_epoch = -1
+        self.decay_steps = max(1, total_steps - warmup_steps - hold_steps)
+        
+        self.last_step = -1
         self.current_sigma = max_val
         
 
-    def get_sigma(self, epoch: int) -> float:
-        """Return scheduled sigma at given epoch."""
+    def get_sigma(self, step: int) -> float:
+        """Return scheduled sigma at given step."""
 
         # 1. Warmup phase
-        if epoch < self.warmup_steps:
+        if step < self.warmup_steps:
             return self.max_val
 
-        # 2. Decay phase
-        t = (epoch - self.warmup_steps) / max(
-            1, self.total_steps - self.warmup_steps
-        )
-        t = min(max(t, 0.0), 1.0)
+        # 2. Decay phase & Hold phase
+        t = (step - self.warmup_steps) / float(self.decay_steps)
+        t = min(max(t, 0.0), 1.0) # if step>warmup+decay, t=1.0
 
         if self.mode == "linear":
             sigma = self.max_val * (1 - t) + self.min_val * t

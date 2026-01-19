@@ -7,6 +7,8 @@ import math
 from src.modules.networks import Encoder, Decoder
 
 
+
+
 class MLPEncoder(nn.Module):
     def __init__(
         self,
