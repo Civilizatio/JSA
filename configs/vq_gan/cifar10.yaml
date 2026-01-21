@@ -32,7 +32,7 @@ model:
         attn_resolutions: []
         dropout: 0.0
         resamp_with_conv: true
-        final_activation: tanh
+        final_activation: null
 
     quantizer:
       class_path: src.modules.vqvae.quantize.VectorQuantizer2
@@ -65,7 +65,7 @@ data:
   class_path: src.data.cifar10.CIFAR10DataModule
   init_args:
     root: ./data/cifar10
-    batch_size: 128
+    batch_size: 450
     num_workers: 4
 
 trainer:

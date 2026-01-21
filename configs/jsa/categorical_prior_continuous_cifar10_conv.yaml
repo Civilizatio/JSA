@@ -12,7 +12,7 @@ model:
           init_args:
             num_categories: [1024]
             num_latent_vars: 1
-            embedding_dims: [256]
+            embedding_dims: [12]
             final_activation: tanh
             ch: 64 
             out_ch: 3
@@ -25,7 +25,7 @@ model:
             resamp_with_conv: true
             in_channels: null # not used in decoder
             resolution: 32
-            z_channels: 256 # should calculated based on embedding_dims and num_latent_vars
+            z_channels: 12 # should calculated based on embedding_dims and num_latent_vars
     proposal_model:
       class_path: src.modules.jsa.proposal_model.ProposalModelCategorical
       init_args:
@@ -61,10 +61,10 @@ model:
       #   disc_weight: 1.0
       #   disc_loss: hinge
     
-    base_lr_joint: 4.5e-07
-    base_lr_proposal: 4.5e-07
+    base_lr_joint: 1.67e-07
+    base_lr_proposal: 1.67e-07
     base_lr_discriminator: 1.86e-07
-    num_mis_steps: 10
+    num_mis_steps: 20
     cache_start_epoch: 20000
 
     init_from_ckpt: null
@@ -98,7 +98,7 @@ data:
   class_path: src.data.cifar10.CIFAR10DataModule
   init_args:
     root: ./data/cifar10
-    batch_size: 128
+    batch_size: 450
     num_workers: 4
 
 trainer:
@@ -147,10 +147,10 @@ trainer:
         sort_by_counter: true
         use_log_scale: false
 
-  max_epochs: 5000
+  max_epochs: 400
   max_steps: 50000 # higher priority than max_epochs
   accelerator: gpu
-  devices: [4,5,6,7]
+  devices: [1,2,4,5]
   strategy: ddp_find_unused_parameters_true
   # strategy: auto
   precision: 32

@@ -7,8 +7,6 @@ import math
 from src.modules.networks import Encoder, Decoder
 
 
-
-
 class MLPEncoder(nn.Module):
     def __init__(
         self,
@@ -118,6 +116,7 @@ class ConvDecoder(nn.Module):
             resolution=resolution,
             z_channels=z_channels,
         )
+        
 
         self.final_activation = final_activation
         
@@ -145,7 +144,7 @@ class ConvDecoder(nn.Module):
         h = h_densed.permute(
             0, 3, 1, 2
         ).contiguous()  # [B, H, W, sum(emb_dim)] -> [B, sum(emb_dim), H, W]
-        h = self.conv_in(h)  # [B, z_channels, H, W]
+        h = self.conv_in(h)  # project to z_channels if needed
         x = self.decoder(h)  # [B, out_ch, H, W]
 
         # Rescale output to [0, 1] range if needed
@@ -192,9 +191,17 @@ class ConvEncoder(nn.Module):
             z_channels=z_channels,
             double_z=False,
         )
+        
+        
         self.last_proj = torch.nn.Conv2d(
-            z_channels, out_ch, kernel_size=1, stride=1, padding=0
+            in_channels=z_channels,
+            out_channels=out_ch,
+            kernel_size=1,
+            stride=1,
+            padding=0,
         )
+        
+    
 
     def get_last_layer_weight(self):
         return self.encoder.conv_out.weight
@@ -202,7 +209,7 @@ class ConvEncoder(nn.Module):
     def forward(self, x):
         # x: [B, in_channels, H, W]
         # return h: [B, H, W, out_ch]
-        x = self.encoder(x)  # [B, z_channels, H, W]
-        x = self.last_proj(x)  # [B, out_ch, H, W]
-        x = x.permute(0, 2, 3, 1).contiguous()  # [B, H, W, z_channels]
+        x = self.encoder(x)  # [B, out_ch, H, W]
+        x = self.last_proj(x)  # project to out_ch if needed
+        x = x.permute(0, 2, 3, 1).contiguous()  # [B, H, W, out_ch]
         return x

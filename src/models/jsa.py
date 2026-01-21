@@ -7,6 +7,7 @@ import torch.distributed as dist
 
 from src.samplers.misampler import MISampler
 from src.base.base_jsa_modules import BaseJointModel, BaseProposalModel
+from src.data.cifar10 import DATASET_KEY
 from src.utils.codebook_utils import (
     encode_multidim_to_index,
     plot_codebook_usage_distribution,
@@ -17,32 +18,6 @@ from src.utils.file_logger import get_file_logger
 from src.modules.losses.jsa_gan import JSAGANLoss
 import math
 
-DATASET_KEY = {
-    "image_key": "image",
-    "index_key": "index",
-    "label_key": "label",
-}
-
-
-def report(tag):
-    torch.cuda.synchronize()
-    print(
-        tag,
-        "allocated:",
-        torch.cuda.memory_allocated() / 1024**2,
-        "MB | reserved:",
-        torch.cuda.memory_reserved() / 1024**2,
-        "MB",
-    )
-
-def cuda_probe(tag):
-    torch.cuda.synchronize()
-    print(
-        f"[{tag}] "
-        f"allocated={torch.cuda.memory_allocated() / 1024**2:.1f} MB | "
-        f"max_allocated={torch.cuda.max_memory_allocated() / 1024**2:.1f} MB | "
-        f"reserved={torch.cuda.memory_reserved() / 1024**2:.1f} MB"
-    )
 
 
 class JSA(LightningModule):
@@ -107,10 +82,10 @@ class JSA(LightningModule):
         device = self.device
         self.sampler.to(device)
         
-    def get_input(self, batch, dataset_key):
-        data = batch[dataset_key["image_key"]]
-        idx = batch[dataset_key["index_key"]]
-        return data, idx
+    def get_input(self, batch, key):
+        data = batch[key]
+        data = data.to(memory_format=torch.contiguous_format)
+        return data
         
 
     def on_fit_start(self):
@@ -168,6 +143,14 @@ class JSA(LightningModule):
     def forward(self, x, idx=None):
 
         h = self.proposal_model.encode(x)
+        x_hat = self.joint_model.decode(h)
+        return x_hat
+    
+    def encode(self, x):
+        h = self.proposal_model.encode(x)
+        return h
+    
+    def decode(self, h):
         x_hat = self.joint_model.decode(h)
         return x_hat
 
@@ -233,8 +216,9 @@ class JSA(LightningModule):
     
     def training_step(self, batch, batch_idx):
 
-        x, idx = self.get_input(batch, self.dataset_key)  # x: [B, C, H, W], idx: [B,]
-
+        x = self.get_input(batch, self.dataset_key["image_key"])  # x: [B, C, H, W], idx: [B,]
+        idx = self.get_input(batch, self.dataset_key["index_key"])
+        
         # MISampling step
         h = self.sampler.sample(
             x, idx=idx, num_steps=self.num_mis_steps, parallel=False, return_all=False
@@ -322,7 +306,8 @@ class JSA(LightningModule):
     # ========================= Validation =========================
 
     def validation_step(self, batch, batch_idx):
-        x, idx = self.get_input(batch, self.dataset_key)  # x: [B, C, H, W], idx: [B,]
+        x = self.get_input(batch, self.dataset_key["image_key"])  # x: [B, C, H, W]
+        idx = self.get_input(batch, self.dataset_key["index_key"])  # idx: [B,]
 
         nll, recon_mse = self.get_nll(x, idx=idx)  # [B,]
 
@@ -381,14 +366,14 @@ class JSA(LightningModule):
     
     def log_images(self, batch, **kwargs):
         log = dict()
-        x, _ = self.get_input(batch, self.dataset_key)
+        x = self.get_input(batch, self.dataset_key["image_key"])
         x_rec = self.forward(x)
         log["inputs"] = x
         log["reconstructions"] = x_rec
         return log
     
     def get_codebook_indices(self, batch):
-        x, _ = self.get_input(batch, self.dataset_key)
+        x = self.get_input(batch, self.dataset_key["image_key"])
         h = self.proposal_model.encode(x)
         h = h.view(-1, self.proposal_model.num_latent_vars)
         indices = encode_multidim_to_index(h, self.proposal_model.num_categories)

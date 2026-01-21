@@ -34,6 +34,23 @@ batch_size: 128(4)
 
 需要设置为 4.5e-07，增加 hold steps，减小 mis 步骤到 10 的配置继续跑更长时间看看效果
 
+对 JSA 再跑两个验证实验：
+
+用 4.5e-07 的学习率，改变 encoder/decoder 的网络结构，对比实验结果。
+分为两个：
+归一化到 [-1,1] 和无限制两种情况。
+同时，加一个通道数为 256 和 通道数为 12 的情况的对比
+一共四种情况：
+1. 归一化到 [-1,1]，通道数 256[](egs/cifar10/jsa/categorical_prior_conv/2026-01-19_16-09-19)
+2. 归一化到 [-1,1]，通道数 12[](egs/cifar10/jsa/categorical_prior_conv/2026-01-19_16-20-55)
+3. 无限制，通道数 256[](egs/cifar10/jsa/categorical_prior_conv/2026-01-19_16-17-12)
+4. 无限制，通道数 12[](egs/cifar10/jsa/categorical_prior_conv/2026-01-19_16-18-24)
+
+补充一个原来可以跑出来的最好的实验
+学习率 3e-4，归一化到 [-1,1]，[](egs/cifar10/jsa/categorical_prior_conv/2026-01-20_15-49-05)
+以及与其对应的网络结构略有不同的通道数为 256 的情况
+[](egs/cifar10/jsa/categorical_prior_conv/2026-01-20_15-55-07)
+
 
 VQ-GAN：
 batch_size: 128(4)

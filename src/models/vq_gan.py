@@ -2,6 +2,8 @@ import torch
 import torch.nn.functional as F
 from lightning.pytorch import LightningModule
 
+from src.data.cifar10 import DATASET_KEY
+from src.modules.networks import Encoder, Decoder
 from src.modules.vqvae.vq_adaptor import ConvEncoder, ConvDecoder
 from src.modules.vqvae.quantize import VectorQuantizer2 as VectorQuantizer
 from src.modules.losses.vqperceptual import VQLPIPSWithDiscriminator
@@ -32,6 +34,9 @@ class VQModel(LightningModule):
         self.quantizer: VectorQuantizer = quantizer
         self.base_learning_rate = base_learning_rate
         self.learning_rate = base_learning_rate
+        self.dataset_key = DATASET_KEY
+        if self.image_key is not None:
+            self.dataset_key["image_key"] = self.image_key
 
         if ckpt_path is not None:
             self.init_from_ckpt(ckpt_path, ignore_keys=ignore_keys)
@@ -115,7 +120,7 @@ class VQModel(LightningModule):
         opt_ae, opt_disc = self.optimizers()
 
         # Forward pass
-        x = self.get_input(batch, self.image_key)
+        x = self.get_input(batch, self.dataset_key["image_key"])
         xrec, qloss = self(x)
 
         # Get losses and logs from the loss function
@@ -161,7 +166,7 @@ class VQModel(LightningModule):
 
     
     def validation_step(self, batch, batch_idx):
-        x = self.get_input(batch, self.image_key)
+        x = self.get_input(batch, self.dataset_key["image_key"])
         quant, qloss, info = self.encode(x)
         xrec = self.decode(quant)
         
@@ -239,7 +244,7 @@ class VQModel(LightningModule):
 
     def log_images(self, batch, **kwargs):
         log = dict()
-        x = self.get_input(batch, self.image_key)
+        x = self.get_input(batch, self.dataset_key["image_key"])
         x = x.to(self.device)
         xrec, _ = self(x)
         if x.shape[1] > 3:
@@ -252,7 +257,7 @@ class VQModel(LightningModule):
         return log
     
     def get_codebook_indices(self, batch):
-        x = self.get_input(batch, self.image_key)
+        x = self.get_input(batch, self.dataset_key["image_key"])
         _, _, info = self.encode(x)
         return info[2]  # indices
     
@@ -261,7 +266,7 @@ class VQModel(LightningModule):
 
 
     def to_rgb(self, x):
-        assert self.image_key == "segmentation"
+        assert self.dataset_key["image_key"] == "segmentation"
         if not hasattr(self, "colorize"):
             self.register_buffer("colorize", torch.randn(3, x.shape[1], 1, 1).to(x))
         x = F.conv2d(x, weight=self.colorize)
@@ -297,7 +302,7 @@ class VQNoDiscModel(VQModel):
         self.automatic_optimization = True
 
     def training_step(self, batch, batch_idx):
-        x = self.get_input(batch, self.image_key)
+        x = self.get_input(batch, self.dataset_key["image_key"])
         xrec, qloss = self(x)
 
         # 假设 loss 函数在这里仅返回重构损失和日志字典
@@ -314,7 +319,7 @@ class VQNoDiscModel(VQModel):
         return loss
 
     def validation_step(self, batch, batch_idx):
-        x = self.get_input(batch, self.image_key)
+        x = self.get_input(batch, self.dataset_key["image_key"])
         xrec, qloss = self(x)
 
         loss, log_dict = self.loss(qloss, x, xrec, self.global_step, split="valid")

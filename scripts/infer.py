@@ -1,6 +1,7 @@
 # sripts/infer.py
 import torch
 from src.models.jsa import JSA
+from src.models.vq_gan import VQModel
 from torch.utils.data import DataLoader
 from src.data.mnist import MNISTDataset
 from src.data.cifar10 import CIFAR10Dataset
@@ -19,10 +20,17 @@ from src.utils.codebook_utils import (
     save_images_grid,
 )
 
+from tqdm import tqdm
+
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity as LPIPSMetric
 from torchmetrics.image.fid import FrechetInceptionDistance as FIDMetric
 from torchmetrics.image.ssim import StructuralSimilarityIndexMeasure as SSIMMetric
 
+
+class InferenceCLI(LightningCLI):
+    def add_arguments_to_parser(self, parser):
+        # Allow these keys in config by adding them as arguments
+        parser.add_argument("--ckpt_path", type=str, default=None)
 
 
 def decode_images(indices, model, num_categories):
@@ -37,17 +45,61 @@ def decode_images(indices, model, num_categories):
     with torch.no_grad():
         for index in indices:
             # Convert 1D index to multi-dimensional category indices
-            multi_dim_index = decode_index_to_multidim(
-                index, num_categories
-            ).to(model.device)  # [num_latent_vars]
-            
+            multi_dim_index = decode_index_to_multidim(index, num_categories).to(
+                model.device
+            )  # [num_latent_vars]
+
             # Expand to [B, H, W, num_latent_vars] for batch size 1, height 1, width 1
-            multi_dim_index = multi_dim_index.unsqueeze(0).unsqueeze(0).unsqueeze(0)  # [1,1,1,num_latent_vars]
+            multi_dim_index = (
+                multi_dim_index.unsqueeze(0).unsqueeze(0).unsqueeze(0)
+            )  # [1,1,1,num_latent_vars]
 
             # Decode image
             decoded = model.joint_model.decode(multi_dim_index)
             decoded_images.append(decoded.cpu().squeeze(0).numpy())  # [28*28]
     return decoded_images
+
+
+def get_model_info(model):
+    """Get model type and codebook information."""
+    if isinstance(model, VQModel):
+        model_type = "VQModel"
+        codebook_size = model.get_codebook_size()
+        num_categories = [codebook_size]
+        num_latent_vars = 1
+    elif isinstance(model, JSA):
+        model_type = "JSA"
+        num_latent_vars = model.proposal_model.num_latent_vars
+        num_categories = model.proposal_model._num_categories
+        codebook_size = math.prod(num_categories)
+    else:
+        raise ValueError(f"Unsupported model type: {type(model)}")
+    return model_type, num_latent_vars, num_categories, codebook_size
+
+
+def inference_step(batch, model, device):
+    # Move input to device
+    batch = {
+        k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()
+    }
+    # Get codebook indices
+
+    indices = model.get_codebook_indices(batch)
+    x = model.get_input(batch, model.dataset_key["image_key"])
+    if isinstance(batch, dict) and "label" in batch:
+        y = batch["label"]
+    elif isinstance(batch, (list, tuple)) and len(batch) > 1:
+        y = batch[1]
+    else:
+        y = None
+
+    # Reconstruct images
+    if isinstance(model, VQModel):
+        x_hat, _ = model.forward(x)
+    elif isinstance(model, JSA):
+        x_hat = model.forward(x)
+
+    return x, x_hat, y, indices
 
 
 # ================= Main Inference Script ================= #
@@ -75,75 +127,82 @@ def main(exp_dir, config_path, checkpoint_path):
     logger.info(f"Loading model from {checkpoint_path}...")
 
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
-    cli = LightningCLI(
+    cli = InferenceCLI(
         run=False,
         args=[
-            "--config", config_path,
-        ]
+            "--config",
+            config_path,
+        ],
     )
-    
+
     model = cli.model
     ckpt = torch.load(checkpoint_path, map_location=device)
     model.load_state_dict(ckpt["state_dict"])
-    model=model.to(device)
+    model = model.to(device)
     model.eval()
-    
-    # LPIPS metric
-    lpips_metric = LPIPSMetric(net_type="vgg").to(device)
-    # FID metric
-    fid_metric = FIDMetric(feature=2048).to(device)
-    # SSIM metric
-    ssim_metric = SSIMMetric(data_range=1.0).to(device)
 
     # Prepare test data
     test_dataset = CIFAR10Dataset(root="./data/cifar10", train=False)
     test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
 
-    num_latent_vars = model.proposal_model.num_latent_vars
-    num_categories = model.proposal_model._num_categories
+    # Get model info
+    model_type, num_latent_vars, num_categories, codebook_size = get_model_info(model)
+    logger.info(f"Model type: {model_type}")
+    logger.info(f"Number of latent variables: {num_latent_vars}")
+    logger.info(f"Number of categories per latent variable: {num_categories}")
+    logger.info(f"Total codebook size: {codebook_size}")
 
-    codebook_size = math.prod(num_categories)
-    codebook_counter = np.zeros(codebook_size, dtype=np.int32)
-    logger.info(
-        f"Number of latent variables: {num_latent_vars}, Codebook size: {codebook_size}"
-    )
-    
-    total_mse = 0.0
-    total_l1 = 0.0
-    total_samples = 0
-    
-    vis_samples = {}
+    codebook_counter = torch.zeros(codebook_size, dtype=torch.long, device=device)
+
+    # Prepare metrics
+    metrics = {
+        "lpips": LPIPSMetric(net_type="vgg").to(device),
+        "fid": FIDMetric(feature=2048).to(device),
+        "ssim": SSIMMetric(data_range=1.0).to(device),
+    }
+    stats = {
+        "mse": 0.0,
+        "l1": 0.0,
+        "total_samples": 0,
+    }
+    vis_samples = dict()  # To store visualization samples per class
 
     # Iterate over test data and count codebook usage
     with torch.no_grad():  # Disable gradient computation
-        for batch in test_loader:
-            x, y, idx = batch
-            x = x.to(device)
-            h = model.proposal_model.encode(x)  # [B, H, W, num_latent_vars]
-            x_hat = model.joint_model.decode(h)
-            
-            # x and x_hat are in [0,1] range
-            # LPIPS: need to be in [-1,1] range
-            x_lpips = x * 2 - 1
-            x_hat_lpips = x_hat * 2 - 1
-            lpips_metric.update(x_lpips, x_hat_lpips)
-            
-            # SSIM
-            ssim_metric.update(x, x_hat)
-            
-            # MSE and L1
-            mse = F.mse_loss(x_hat, x, reduction="mean").item()
-            l1 = F.l1_loss(x_hat, x, reduction="mean").item()
-            total_mse += mse * x.size(0)
-            total_l1 += l1 * x.size(0)
-            total_samples += x.size(0)
-            
-            # FID: need to convert to [0,255] and uint8
-            x_fid = (x * 255).to(torch.uint8)
-            x_hat_fid = (x_hat * 255).to(torch.uint8)
-            fid_metric.update(x_fid, real=True)
-            fid_metric.update(x_hat_fid, real=False)
-            
+        for batch in tqdm(test_loader):
+
+            x, x_hat, y, indices = inference_step(batch, model, device)
+
+            # Get codebook indices and update counter
+            codebook_counter.index_add_(
+                0,
+                indices,
+                torch.ones_like(indices, dtype=torch.long, device=device),
+            )
+
+            # Update metrics
+            # MSE/L1
+            stats["mse"] += F.mse_loss(x_hat, x, reduction="sum").item()
+            stats["l1"] += F.l1_loss(x_hat, x, reduction="sum").item()
+            stats["total_samples"] += x.size(0)
+
+            # Advance metrics
+            # LPIPS: [-1, 1]
+            x_lpips = x.clamp(-1, 1)
+            x_hat_lpips = x_hat.clamp(-1, 1)
+            metrics["lpips"].update(x_lpips, x_hat_lpips)
+
+            # SSIM: [0, 1]
+            x_ssim = torch.clamp((x + 1.0) / 2.0, 0, 1)
+            x_hat_ssim = torch.clamp((x_hat + 1.0) / 2.0, 0, 1)
+            metrics["ssim"].update(x_ssim, x_hat_ssim)
+
+            # FID: 0~255, UINT8
+            x_fid = ((x + 1.0) / 2.0 * 255).to(torch.uint8)
+            x_hat_fid = ((x_hat + 1.0) / 2.0 * 255).to(torch.uint8)
+            metrics["fid"].update(x_fid, real=True)
+            metrics["fid"].update(x_hat_fid, real=False)
+
             if len(vis_samples) < 10:
                 batch_y = y.cpu().numpy()
                 x_cpu = x.cpu().numpy()
@@ -153,110 +212,52 @@ def main(exp_dir, config_path, checkpoint_path):
                         vis_samples[batch_y[i]] = (x_cpu[i], x_hat_cpu[i])
                     if len(vis_samples) >= 10:
                         break
-            
-            h = h.view(-1, num_latent_vars) # [B*H*W, num_latent_vars]
-            # print("Sampled latent variables h shape:", h.shape)
 
-            h = h.cpu().numpy()  # [B, num_latent_vars]
-            indices = encode_multidim_to_index(h, num_categories)
-            for index in indices:
-                codebook_counter[index] += 1
     # Compute codebook utilization
-    used_codewords = np.sum(codebook_counter > 0)
+    used_codewords = torch.sum(codebook_counter > 0).item()
     utilization_rate = used_codewords / codebook_size * 100
     logger.info(f"Used codewords: {used_codewords}/{codebook_size}")
     logger.info(f"Codebook utilization rate: {utilization_rate:.4f}%")
-    
-    avg_mse = total_mse / total_samples
-    avg_l1 = total_l1 / total_samples
-    final_lpips = lpips_metric.compute().item()
-    final_fid = fid_metric.compute().item()
-    final_ssim = ssim_metric.compute().item()
+
+    avg_mse = stats["mse"] / stats["total_samples"]
+    avg_l1 = stats["l1"] / stats["total_samples"]
+    final_lpips = metrics["lpips"].compute().item()
+    final_fid = metrics["fid"].compute().item()
+    final_ssim = metrics["ssim"].compute().item()
     logger.info(f"Average MSE on test set: {avg_mse:.6f}")
     logger.info(f"Average L1 Loss on test set: {avg_l1:.6f}")
     logger.info(f"Average LPIPS on test set: {final_lpips:.6f}")
     logger.info(f"FID between test set and reconstructions: {final_fid:.6f}")
     logger.info(f"Average SSIM on test set: {final_ssim:.6f}")
-    
+
     if len(vis_samples) > 0:
         sorted_keys = sorted(vis_samples.keys())
-        orig_images = torch.stack([torch.tensor(vis_samples[k][0]) for k in sorted_keys])
-        recon_images = torch.stack([torch.tensor(vis_samples[k][1]) for k in sorted_keys])
+        orig_images = torch.stack(
+            [torch.tensor(vis_samples[k][0]) for k in sorted_keys]
+        )
+        recon_images = torch.stack(
+            [torch.tensor(vis_samples[k][1]) for k in sorted_keys]
+        )
         save_images_grid(
             images=orig_images,
             save_path=f"{infer_dir}/original_images.png",
             nrow=len(orig_images),
         )
-        # save_images_grid(
-        #     orig_images,
-        #     save_path=f"{infer_dir}/original_images.png",
-        #     images_per_page=len(orig_images),
-        #     grid_size=(1, len(orig_images)),
-        #     title="Original Images",
-        #     save_to_disk=True,
-        # )
         save_images_grid(
             images=recon_images,
             save_path=f"{infer_dir}/reconstructed_images.png",
             nrow=len(recon_images),
         )
-        # save_images_grid(
-        #     recon_images,
-        #     save_path=f"{infer_dir}/reconstructed_images.png",
-        #     images_per_page=len(recon_images),
-        #     grid_size=(1, len(recon_images)),
-        #     title="Reconstructed Images",
-        #     save_to_disk=True,
-        # )
         comparison = torch.cat([orig_images, recon_images], dim=0)
         save_images_grid(
             images=comparison,
             save_path=f"{infer_dir}/images_comparison.png",
-            nrow=len(orig_images)
+            nrow=len(orig_images),
         )
-
-    # Find indices of used codewords
-    used_codeword_indices = np.where(codebook_counter > 0)[0]
-    logger.info(f"Used codeword indices: {used_codeword_indices}")
-
-    # Decode used codewords to inspect corresponding images
-    # model.joint_model.eval()
-    # decoded_images = decode_images(
-    #     used_codeword_indices, model, num_categories
-    # )
-    # save_images_grid(
-    #     decoded_images,
-    #     save_path=f"{infer_dir}/decoded_codewords",
-    #     images_per_page=100,
-    #     grid_size=(10, 10),
-    #     title="Decoded Images from Used Codewords",
-    #     save_to_disk=True,
-    # )
-
-    # Also decode unused codewords to inspect their images
-    # unused_codeword_indices = np.where(codebook_counter == 0)[0]
-    # logger.info(f"Unused codeword indices: {unused_codeword_indices}")
-    # Select a subset of unused codewords to decode
-    # num_unused_to_decode = min(100, len(unused_codeword_indices))
-    # unused_codeword_indices = unused_codeword_indices[:num_unused_to_decode]
-
-    # decoded_unused_images = decode_images(
-    #     unused_codeword_indices, model, num_categories
-    # )
-
-    # Save decoded images, 100 per page in a 10x10 grid
-    # save_images_grid(
-    #     decoded_unused_images,
-    #     save_path=f"{infer_dir}/decoded_unused_codewords",
-    #     images_per_page=100,
-    #     grid_size=(10, 10),
-    #     title="Decoded Images from Unused Codewords",
-    #     save_to_disk=True,
-    # )
 
     # Plot 1D distribution
     _, code_entropy = plot_codebook_usage_distribution(
-        codebook_counter,
+        codebook_counter.cpu().numpy(),
         codebook_size,
         save_path=f"{infer_dir}/codebook_usage_distribution.png",
         sort_by_counter=True,
@@ -265,10 +266,18 @@ def main(exp_dir, config_path, checkpoint_path):
     )
     logger.info(f"Codebook utilization entropy: {code_entropy:.4f} bits")
 
+    # Clear loggers
+    if logger.hasHandlers():
+        logger.handlers.clear()
+    
 
 if __name__ == "__main__":
 
-    exp_dir = "egs/continuous_cifar10/categorical_prior_conv/version_5"
-    config_path = "./configs/categorical_prior_continuous_cifar10_conv.yaml"
-    checkpoint_path = f"{exp_dir}/checkpoints/last.ckpt"
-    main(exp_dir, config_path, checkpoint_path)
+    dir_list = [
+       "egs/cifar10/jsa/categorical_prior_conv/2026-01-20_15-49-05",
+    ]
+    
+    for exp_dir in dir_list:
+        config_path = f"{exp_dir}/config.yaml"
+        checkpoint_path = f"{exp_dir}/checkpoints/last.ckpt"
+        main(exp_dir, config_path, checkpoint_path)

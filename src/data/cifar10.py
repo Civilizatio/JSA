@@ -1,9 +1,14 @@
-# src/data/mnist.py
+# src/data/cifar10.py
 from lightning.pytorch import LightningDataModule
 from torch.utils.data import DataLoader, random_split
 from torchvision import datasets, transforms
 from src.base.base_dataset import JsaDataset
 
+DATASET_KEY = {
+    "image_key": "image",
+    "index_key": "index",
+    "label_key": "label",
+}
 
 class CIFAR10Dataset(JsaDataset):
     def __init__(self, root: str, train=True):
