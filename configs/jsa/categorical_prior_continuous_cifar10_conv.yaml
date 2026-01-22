@@ -12,7 +12,7 @@ model:
           init_args:
             num_categories: [1024]
             num_latent_vars: 1
-            embedding_dims: [12]
+            embedding_dims: [256]
             final_activation: tanh
             ch: 64 
             out_ch: 3
@@ -25,7 +25,7 @@ model:
             resamp_with_conv: true
             in_channels: null # not used in decoder
             resolution: 32
-            z_channels: 12 # should calculated based on embedding_dims and num_latent_vars
+            z_channels: 256 # should calculated based on embedding_dims and num_latent_vars
     proposal_model:
       class_path: src.modules.jsa.proposal_model.ProposalModelCategorical
       init_args:
@@ -61,8 +61,8 @@ model:
       #   disc_weight: 1.0
       #   disc_loss: hinge
     
-    base_lr_joint: 1.67e-07
-    base_lr_proposal: 1.67e-07
+    base_lr_joint: 4.5e-07
+    base_lr_proposal: 4.5e-07
     base_lr_discriminator: 1.86e-07
     num_mis_steps: 20
     cache_start_epoch: 20000

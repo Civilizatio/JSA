@@ -374,9 +374,8 @@ class JSA(LightningModule):
     
     def get_codebook_indices(self, batch):
         x = self.get_input(batch, self.dataset_key["image_key"])
-        h = self.proposal_model.encode(x)
-        h = h.view(-1, self.proposal_model.num_latent_vars)
-        indices = encode_multidim_to_index(h, self.proposal_model.num_categories)
+        h = self.proposal_model.encode(x, sane_index_shape=False)  # [B*H*W*num_latent_vars, 1]
+        indices = encode_multidim_to_index(h, self.proposal_model.num_categories)  # [B*H*W*num_latent_vars, ]
         return indices
     
     def get_codebook_size(self):

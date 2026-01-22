@@ -27,10 +27,286 @@ from torchmetrics.image.fid import FrechetInceptionDistance as FIDMetric
 from torchmetrics.image.ssim import StructuralSimilarityIndexMeasure as SSIMMetric
 
 
+# ================ Utility Classes and Functions ================ #
+class InferenceModule:
+    """Base interface for inference modules.
+
+    Three stages: setup, update, finalize.
+    """
+
+    def setup(self, device, logger, save_dir):
+        pass
+
+    def update(self, batch, outputs):
+        pass
+
+    def finalize(self):
+        pass
+
+
+class MetricTracker(InferenceModule):
+    """Handles all numerical metrics during inference.
+
+    Metrics include:
+    - MSE
+    - L1
+    - LPIPS
+    - FID
+    - SSIM
+    """
+
+    def __init__(self):
+        self.metrics = dict()
+        self.stats = {
+            "mse": 0.0,
+            "l1": 0.0,
+            "total_samples": 0,
+        }
+
+    def setup(self, device, logger, save_dir):
+        self.device = device
+        self.logger = logger
+        self.metrics = {
+            "lpips": LPIPSMetric(net_type="vgg").to(device),
+            "fid": FIDMetric(feature=2048).to(device),
+            "ssim": SSIMMetric(data_range=1.0).to(device),
+        }
+
+    def update(self, batch, outputs):
+        x = outputs["x"]
+        x_hat = outputs["x_hat"]
+
+        # Basic stats
+        self.stats["mse"] += F.mse_loss(x_hat, x, reduction="sum").item()
+        self.stats["l1"] += F.l1_loss(x_hat, x, reduction="sum").item()
+        self.stats["total_samples"] += x.size(0)
+
+        # Advance metrics
+        # LPIPS: [-1, 1]
+        x_lpips = x.clamp(-1, 1)
+        x_hat_lpips = x_hat.clamp(-1, 1)
+        self.metrics["lpips"].update(x_lpips, x_hat_lpips)
+
+        # SSIM: [0, 1]
+        x_ssim = torch.clamp((x + 1.0) / 2.0, 0, 1)
+        x_hat_ssim = torch.clamp((x_hat + 1.0) / 2.0, 0, 1)
+        self.metrics["ssim"].update(x_ssim, x_hat_ssim)
+
+        # FID: 0~255, UINT8
+        x_fid = ((x + 1.0) / 2.0 * 255).to(torch.uint8)
+        x_hat_fid = ((x_hat + 1.0) / 2.0 * 255).to(torch.uint8)
+        self.metrics["fid"].update(x_fid, real=True)
+        self.metrics["fid"].update(x_hat_fid, real=False)
+
+    def finalize(self):
+        avg_mse = self.stats["mse"] / self.stats["total_samples"]
+        avg_l1 = self.stats["l1"] / self.stats["total_samples"]
+        final_lpips = self.metrics["lpips"].compute().item()
+        final_fid = self.metrics["fid"].compute().item()
+        final_ssim = self.metrics["ssim"].compute().item()
+
+        self.logger.info(f"Average MSE on test set: {avg_mse:.6f}")
+        self.logger.info(f"Average L1 Loss on test set: {avg_l1:.6f}")
+        self.logger.info(f"Average LPIPS on test set: {final_lpips:.6f}")
+        self.logger.info(f"FID between test set and reconstructions: {final_fid:.6f}")
+        self.logger.info(f"Average SSIM on test set: {final_ssim:.6f}")
+
+
+class CodebookUsageTracker(InferenceModule):
+    """Tracks codebook usage statistics during inference.
+
+    Includes:
+    - Global codeword usage count
+    - Per-Class codeword usage (if labels available)
+    """
+
+    def __init__(self, codebook_size, class_names=None, track_per_class=False):
+        self.codebook_size = codebook_size
+        self.class_names = class_names if class_names else []
+        self.track_per_class = track_per_class
+
+    def setup(self, device, logger, save_dir):
+        self.device = device
+        self.logger = logger
+        self.save_dir = save_dir
+
+        # Global codebook counter
+        self.codebook_counter = torch.zeros(
+            self.codebook_size, dtype=torch.long, device=device
+        )
+
+        # Per-class codebook counters
+        if self.track_per_class and len(self.class_names) > 0:
+            self.class_counters = torch.zeros(
+                (len(self.class_names), self.codebook_size),
+                dtype=torch.long,
+                device=device,
+            )
+
+    def update(self, batch, outputs):
+        indices = outputs["indices"]  # [B*H*W*num_latent_vars, ]
+        y = outputs.get("y", None)  # [B, ] or None
+
+        # Update global counter
+        self.codebook_counter.index_add_(
+            0,
+            indices,
+            torch.ones_like(indices, dtype=torch.long, device=self.device),
+        )
+
+        # Update per-class counters
+        if self.track_per_class and y is not None:
+            # Interleaving y to match indices shape if needed
+            y = (
+                y.unsqueeze(1).expand(-1, indices.size(0) // y.size(0)).reshape(-1)
+            )  # [B*H*W*num_latent_vars, ]
+
+            for class_idx, class_name in enumerate(self.class_names):
+                mask = y == class_idx
+                if mask.any():
+                    selected_indices = indices[mask]
+                    self.class_counters[class_idx].index_add_(
+                        0,
+                        selected_indices,
+                        torch.ones_like(
+                            selected_indices, dtype=torch.long, device=self.device
+                        ),
+                    )
+
+    def finalize(self):
+
+        # Global codebook usage
+        used_codewords = torch.sum(self.codebook_counter > 0).item()
+        utilization_rate = used_codewords / self.codebook_size * 100
+        self.logger.info(f"Used codewords: {used_codewords}/{self.codebook_size}")
+        self.logger.info(f"Codebook utilization rate: {utilization_rate:.4f}%")
+
+        # Global distribution plot
+        _, code_entropy = plot_codebook_usage_distribution(
+            self.codebook_counter.cpu().numpy(),
+            self.codebook_size,
+            save_path=f"{self.save_dir}/codebook_usage_distribution.png",
+            sort_by_counter=True,
+            save_to_disk=True,
+            use_log_scale=False,
+        )
+        self.logger.info(f"Codebook utilization entropy: {code_entropy:.4f} bits")
+
+        # Per-class codebook usage
+        if self.track_per_class and len(self.class_names) > 0:
+            class_dist_dir = os.path.join(self.save_dir, "class_codebook_distributions")
+            os.makedirs(class_dist_dir, exist_ok=True)
+            self.logger.info(
+                f"Saving per-class codebook distributions to {class_dist_dir}..."
+            )
+            for class_idx, class_name in enumerate(self.class_names):
+                counter = self.class_counters[class_idx]
+                _, class_entropy = plot_codebook_usage_distribution(
+                    counter.cpu().numpy(),
+                    self.codebook_size,
+                    save_path=f"{class_dist_dir}/{class_name}_codebook_distribution.png",
+                    sort_by_counter=False,
+                    save_to_disk=True,
+                    use_log_scale=False,
+                )
+                self.logger.info(
+                    f"Class '{class_name}' codebook utilization entropy: {class_entropy:.4f} bits"
+                )
+
+
+class Visualizer(InferenceModule):
+    """Saves a grid of original and reconstructed images during inference."""
+
+    def __init__(self, max_samples=10):
+        self.max_samples = max_samples
+        self.vis_samples = dict()  # To store visualization samples per class
+
+    def setup(self, device, logger, save_dir):
+        self.logger = logger
+        self.save_dir = save_dir
+
+    def update(self, batch, outputs):
+        if len(self.vis_samples) >= self.max_samples:
+            return
+
+        x = outputs["x"]
+        x_hat = outputs["x_hat"]
+        y = outputs.get("y", None)
+
+        batch_y = y.cpu().numpy() if y is not None else [None] * x.size(0)
+        x_cpu = x.cpu().numpy()
+        x_hat_cpu = x_hat.cpu().numpy()
+
+        for i in range(x.size(0)):
+            label = batch_y[i]
+            if label not in self.vis_samples:
+                self.vis_samples[label] = (x_cpu[i], x_hat_cpu[i])
+            if len(self.vis_samples) >= self.max_samples:
+                break
+
+    def finalize(self):
+        if not self.vis_samples:
+            self.logger.info("No samples collected for visualization.")
+            return
+        sorted_keys = sorted(self.vis_samples.keys())
+        orig_images = torch.stack(
+            [torch.tensor(self.vis_samples[k][0]) for k in sorted_keys]
+        )
+        recon_images = torch.stack(
+            [torch.tensor(self.vis_samples[k][1]) for k in sorted_keys]
+        )
+        save_images_grid(
+            images=orig_images,
+            save_path=f"{self.save_dir}/original_images.png",
+            nrow=len(orig_images),
+        )
+        save_images_grid(
+            images=recon_images,
+            save_path=f"{self.save_dir}/reconstructed_images.png",
+            nrow=len(recon_images),
+        )
+        comparison = torch.cat([orig_images, recon_images], dim=0)
+        save_images_grid(
+            images=comparison,
+            save_path=f"{self.save_dir}/images_comparison.png",
+            nrow=len(orig_images),
+        )
+        self.logger.info(f"Saved visualization images to {self.save_dir}")
+
+
 class InferenceCLI(LightningCLI):
     def add_arguments_to_parser(self, parser):
         # Allow these keys in config by adding them as arguments
         parser.add_argument("--ckpt_path", type=str, default=None)
+
+
+def prepare_modules(run_config, codebook_size, class_names):
+    """Prepare inference modules based on run configuration."""
+    modules = []
+
+    # Metric Tracker
+    if run_config.get("metrics", True):
+        metric_tracker = MetricTracker()
+        modules.append(metric_tracker)
+
+    # Codebook Usage Tracker
+    if run_config.get("codebook_global", True) or run_config.get(
+        "codebook_per_class", False
+    ):
+        track_per_class = run_config.get("codebook_per_class", False)
+        codebook_tracker = CodebookUsageTracker(
+            codebook_size=codebook_size,
+            class_names=class_names,
+            track_per_class=track_per_class,
+        )
+        modules.append(codebook_tracker)
+
+    # Visualizer
+    if run_config.get("visualization", True):
+        visualizer = Visualizer(max_samples=10)
+        modules.append(visualizer)
+
+    return modules
 
 
 def decode_images(indices, model, num_categories):
@@ -99,14 +375,33 @@ def inference_step(batch, model, device):
     elif isinstance(model, JSA):
         x_hat = model.forward(x)
 
-    return x, x_hat, y, indices
+    # Attention !
+    # indices: [B*H*W*num_latent_vars, ]
+    # x: [B, C, H, W]
+    # x_hat: [B, C, H, W]
+    # y: [B, ] or None
+    return {"x": x, "x_hat": x_hat, "y": y, "indices": indices}
 
 
 # ================= Main Inference Script ================= #
 
 
-def main(exp_dir, config_path, checkpoint_path):
-    # Load model
+def main(exp_dir, config_path, checkpoint_path, run_config=None):
+    """
+    Args:
+        run_config: dict, Configuration dictionary to enable/disable modules
+    """
+
+    # Default run configuration
+    if run_config is None:
+        run_config = {
+            "metrics": True,
+            "visualization": True,
+            "codebook_global": True,
+            "codebook_per_class": False,
+        }
+
+    # Setup logging and directories
     infer_dir = f"{exp_dir}/inference"
     if os.path.exists(infer_dir):
         shutil.rmtree(infer_dir)
@@ -126,6 +421,7 @@ def main(exp_dir, config_path, checkpoint_path):
     logger.info("Starting inference...")
     logger.info(f"Loading model from {checkpoint_path}...")
 
+    # Load model
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
     cli = InferenceCLI(
         run=False,
@@ -145,6 +441,19 @@ def main(exp_dir, config_path, checkpoint_path):
     test_dataset = CIFAR10Dataset(root="./data/cifar10", train=False)
     test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
 
+    CIFAR10_CLASSES = [
+        "airplane",
+        "automobile",
+        "bird",
+        "cat",
+        "deer",
+        "dog",
+        "frog",
+        "horse",
+        "ship",
+        "truck",
+    ]
+
     # Get model info
     model_type, num_latent_vars, num_categories, codebook_size = get_model_info(model)
     logger.info(f"Model type: {model_type}")
@@ -152,132 +461,51 @@ def main(exp_dir, config_path, checkpoint_path):
     logger.info(f"Number of categories per latent variable: {num_categories}")
     logger.info(f"Total codebook size: {codebook_size}")
 
-    codebook_counter = torch.zeros(codebook_size, dtype=torch.long, device=device)
+    active_modules = prepare_modules(
+        run_config,
+        codebook_size,
+        CIFAR10_CLASSES,
+    )
+    logger.info(
+        f"Active inference modules: {[type(m).__name__ for m in active_modules]}"
+    )
+    for module in active_modules:
+        module.setup(device, logger, infer_dir)
 
-    # Prepare metrics
-    metrics = {
-        "lpips": LPIPSMetric(net_type="vgg").to(device),
-        "fid": FIDMetric(feature=2048).to(device),
-        "ssim": SSIMMetric(data_range=1.0).to(device),
-    }
-    stats = {
-        "mse": 0.0,
-        "l1": 0.0,
-        "total_samples": 0,
-    }
-    vis_samples = dict()  # To store visualization samples per class
-
-    # Iterate over test data and count codebook usage
+    # ========== Main Inference Loop ========== #
     with torch.no_grad():  # Disable gradient computation
         for batch in tqdm(test_loader):
 
-            x, x_hat, y, indices = inference_step(batch, model, device)
+            outputs = inference_step(batch, model, device)
 
-            # Get codebook indices and update counter
-            codebook_counter.index_add_(
-                0,
-                indices,
-                torch.ones_like(indices, dtype=torch.long, device=device),
-            )
+            # Update all modules
+            for module in active_modules:
+                module.update(batch, outputs)
 
-            # Update metrics
-            # MSE/L1
-            stats["mse"] += F.mse_loss(x_hat, x, reduction="sum").item()
-            stats["l1"] += F.l1_loss(x_hat, x, reduction="sum").item()
-            stats["total_samples"] += x.size(0)
-
-            # Advance metrics
-            # LPIPS: [-1, 1]
-            x_lpips = x.clamp(-1, 1)
-            x_hat_lpips = x_hat.clamp(-1, 1)
-            metrics["lpips"].update(x_lpips, x_hat_lpips)
-
-            # SSIM: [0, 1]
-            x_ssim = torch.clamp((x + 1.0) / 2.0, 0, 1)
-            x_hat_ssim = torch.clamp((x_hat + 1.0) / 2.0, 0, 1)
-            metrics["ssim"].update(x_ssim, x_hat_ssim)
-
-            # FID: 0~255, UINT8
-            x_fid = ((x + 1.0) / 2.0 * 255).to(torch.uint8)
-            x_hat_fid = ((x_hat + 1.0) / 2.0 * 255).to(torch.uint8)
-            metrics["fid"].update(x_fid, real=True)
-            metrics["fid"].update(x_hat_fid, real=False)
-
-            if len(vis_samples) < 10:
-                batch_y = y.cpu().numpy()
-                x_cpu = x.cpu().numpy()
-                x_hat_cpu = x_hat.cpu().numpy()
-                for i in range(x.size(0)):
-                    if batch_y[i] not in vis_samples:
-                        vis_samples[batch_y[i]] = (x_cpu[i], x_hat_cpu[i])
-                    if len(vis_samples) >= 10:
-                        break
-
-    # Compute codebook utilization
-    used_codewords = torch.sum(codebook_counter > 0).item()
-    utilization_rate = used_codewords / codebook_size * 100
-    logger.info(f"Used codewords: {used_codewords}/{codebook_size}")
-    logger.info(f"Codebook utilization rate: {utilization_rate:.4f}%")
-
-    avg_mse = stats["mse"] / stats["total_samples"]
-    avg_l1 = stats["l1"] / stats["total_samples"]
-    final_lpips = metrics["lpips"].compute().item()
-    final_fid = metrics["fid"].compute().item()
-    final_ssim = metrics["ssim"].compute().item()
-    logger.info(f"Average MSE on test set: {avg_mse:.6f}")
-    logger.info(f"Average L1 Loss on test set: {avg_l1:.6f}")
-    logger.info(f"Average LPIPS on test set: {final_lpips:.6f}")
-    logger.info(f"FID between test set and reconstructions: {final_fid:.6f}")
-    logger.info(f"Average SSIM on test set: {final_ssim:.6f}")
-
-    if len(vis_samples) > 0:
-        sorted_keys = sorted(vis_samples.keys())
-        orig_images = torch.stack(
-            [torch.tensor(vis_samples[k][0]) for k in sorted_keys]
-        )
-        recon_images = torch.stack(
-            [torch.tensor(vis_samples[k][1]) for k in sorted_keys]
-        )
-        save_images_grid(
-            images=orig_images,
-            save_path=f"{infer_dir}/original_images.png",
-            nrow=len(orig_images),
-        )
-        save_images_grid(
-            images=recon_images,
-            save_path=f"{infer_dir}/reconstructed_images.png",
-            nrow=len(recon_images),
-        )
-        comparison = torch.cat([orig_images, recon_images], dim=0)
-        save_images_grid(
-            images=comparison,
-            save_path=f"{infer_dir}/images_comparison.png",
-            nrow=len(orig_images),
-        )
-
-    # Plot 1D distribution
-    _, code_entropy = plot_codebook_usage_distribution(
-        codebook_counter.cpu().numpy(),
-        codebook_size,
-        save_path=f"{infer_dir}/codebook_usage_distribution.png",
-        sort_by_counter=True,
-        save_to_disk=True,
-        use_log_scale=False,
-    )
-    logger.info(f"Codebook utilization entropy: {code_entropy:.4f} bits")
+    # ========== Finalization ========== #
+    logger.info("Finalizing inference modules...")
+    for module in active_modules:
+        module.finalize()
 
     # Clear loggers
     if logger.hasHandlers():
         logger.handlers.clear()
-    
+
 
 if __name__ == "__main__":
 
     dir_list = [
-       "egs/cifar10/jsa/categorical_prior_conv/2026-01-20_15-49-05",
+        "egs/cifar10/jsa/categorical_prior_conv/2026-01-15_15-41-30",
     ]
-    
+
+    run_config = {
+        "metrics": True,
+        "visualization": True,
+        "codebook_global": True,
+        "codebook_per_class": True,
+    }
+
     for exp_dir in dir_list:
         config_path = f"{exp_dir}/config.yaml"
-        checkpoint_path = f"{exp_dir}/checkpoints/last.ckpt"
-        main(exp_dir, config_path, checkpoint_path)
+        checkpoint_path = f"{exp_dir}/checkpoints/epoch=000193.ckpt"
+        main(exp_dir, config_path, checkpoint_path, run_config=run_config)

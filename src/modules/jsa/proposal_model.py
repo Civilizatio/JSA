@@ -197,6 +197,7 @@ class ProposalModelCategorical(BaseProposalModel):
             ).contiguous()  # [B, num_samples, ...]
             h_samples.unsqueeze_(-1)  # [B, num_samples, ..., 1]
             h_samples_list.append(h_samples)
+            
 
         h_samples = torch.cat(
             h_samples_list, dim=-1
@@ -206,7 +207,7 @@ class ProposalModelCategorical(BaseProposalModel):
             return h_samples.float(), split_logits  # dtype=torch.float
         return h_samples.float()  # dtype=torch.float
 
-    def encode(self, x):
+    def encode(self, x, sane_index_shape=True):
         """Deterministic encoding (argmax)"""
         split_logits = self.forward(x)
 
@@ -216,7 +217,11 @@ class ProposalModelCategorical(BaseProposalModel):
             idx = torch.argmax(logits, dim=-1, keepdim=True)  # [B, 1]
             idx_list.append(idx)
 
-        h_idx = torch.cat(idx_list, dim=-1)  # [B, ..., num_latent_vars]
+        h_idx = torch.cat(idx_list, dim=-1)  # [B, H', W', num_latent_vars]
+        if not sane_index_shape:
+            # return shape [B*H'*W'*num_latent_vars, 1]
+            h_idx = h_idx.view(-1, 1)
+            
         return h_idx.float()
 
     def log_conditional_prob(self, h, x):
