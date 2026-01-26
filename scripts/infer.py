@@ -2,7 +2,7 @@
 import torch
 from src.models.jsa import JSA
 from src.models.vq_gan import VQModel
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 from src.data.mnist import MNISTDataset
 from src.data.cifar10 import CIFAR10Dataset
 import math
@@ -12,6 +12,7 @@ import logging
 import shutil
 from lightning.pytorch.cli import LightningCLI
 import torch.nn.functional as F
+import matplotlib.pyplot as plt
 
 from src.utils.codebook_utils import (
     encode_multidim_to_index,
@@ -19,6 +20,16 @@ from src.utils.codebook_utils import (
     plot_codebook_usage_distribution,
     save_images_grid,
 )
+from src.utils.distribution_analysis import (
+    normalize_counter,
+    js_divergence_matrix,
+    topk_overlap_matrix,
+    plot_heatmap,
+    pca_embedding,
+    umap_embedding,
+    plot_embedding,
+)
+
 
 from tqdm import tqdm
 
@@ -118,12 +129,16 @@ class CodebookUsageTracker(InferenceModule):
     Includes:
     - Global codeword usage count
     - Per-Class codeword usage (if labels available)
+    - Per-Spatial Position codeword usage (if spatial shape provided)
     """
 
-    def __init__(self, codebook_size, class_names=None, track_per_class=False):
+    def __init__(
+        self, codebook_size, class_names=None, track_per_class=False, spatial_shape=None
+    ):
         self.codebook_size = codebook_size
         self.class_names = class_names if class_names else []
         self.track_per_class = track_per_class
+        self.spatial_shape = spatial_shape  # Tuple (H, W) or None
 
     def setup(self, device, logger, save_dir):
         self.device = device
@@ -143,6 +158,18 @@ class CodebookUsageTracker(InferenceModule):
                 device=device,
             )
 
+        # Per-spatial position codebook counters
+        if self.spatial_shape is not None:
+            self.num_spatial_positions = self.spatial_shape[0] * self.spatial_shape[1]
+            self.spatial_counters = torch.zeros(
+                (self.num_spatial_positions, self.codebook_size),
+                dtype=torch.long,
+                device=device,
+            )
+            
+    def set_model(self, model):
+        self.model = model
+    
     def update(self, batch, outputs):
         indices = outputs["indices"]  # [B*H*W*num_latent_vars, ]
         y = outputs.get("y", None)  # [B, ] or None
@@ -172,6 +199,81 @@ class CodebookUsageTracker(InferenceModule):
                             selected_indices, dtype=torch.long, device=self.device
                         ),
                     )
+
+        # Update per-spatial position counters
+        if self.spatial_shape is not None:
+            # indices shape: [B*H*W*num_latent_vars, ]
+            # we need to separate B from H*W*num_latent_vars
+            # Here we assume num_latent_vars is 1 for simplicity
+            B = batch["image"].size(0)
+            indices_spatial = indices.view(B, self.num_spatial_positions)  # [B, H*W]
+            for pos in range(self.num_spatial_positions):
+                pos_indices = indices_spatial[:, pos]
+                self.spatial_counters[pos].index_add_(
+                    0,
+                    pos_indices,
+                    torch.ones_like(pos_indices, dtype=torch.long, device=self.device),
+                )
+
+    def analyze_distributions(
+        self,
+        counters: torch.Tensor,
+        name: str,
+        save_dir: str,
+        topk: int = 50,
+        labels=None,
+        names=None,
+        annotate=False,
+    ):
+        """
+        counters: [N, codebook_size]
+        """
+        os.makedirs(save_dir, exist_ok=True)
+
+        # ---- normalize ----
+        P = np.stack([normalize_counter(c.cpu().numpy()) for c in counters])  # [N, K]
+
+        # ---- JS divergence ----
+        js_mat = js_divergence_matrix(P)
+        plot_heatmap(
+            js_mat,
+            title=f"{name} JS Divergence",
+            save_path=f"{save_dir}/{name}_js_divergence.png",
+        )
+
+        # ---- Top-K overlap ----
+        overlap_mat = topk_overlap_matrix(P, k=topk)
+        plot_heatmap(
+            overlap_mat,
+            title=f"{name} Top-{topk} Overlap",
+            save_path=f"{save_dir}/{name}_top{topk}_overlap.png",
+            cmap="magma",
+        )
+
+        # ---- PCA ----
+        emb_pca, var_ratio = pca_embedding(P)
+        plot_embedding(
+            emb=emb_pca,
+            labels=labels,
+            names=names,
+            annotate=annotate,
+            title=f"{name} PCA (var={var_ratio[0]:.2f},{var_ratio[1]:.2f})",
+            save_path=f"{save_dir}/{name}_pca.png",
+        )
+
+        # ---- UMAP (optional) ----
+        try:
+            emb_umap = umap_embedding(P)
+            plot_embedding(
+                emb=emb_umap,
+                labels=labels,
+                names=names,
+                annotate=annotate,
+                title=f"{name} UMAP",
+                save_path=f"{save_dir}/{name}_umap.png",
+            )
+        except Exception as e:
+            self.logger.warning(f"UMAP skipped: {e}")
 
     def finalize(self):
 
@@ -212,6 +314,72 @@ class CodebookUsageTracker(InferenceModule):
                 self.logger.info(
                     f"Class '{class_name}' codebook utilization entropy: {class_entropy:.4f} bits"
                 )
+            class_dist_dir = os.path.join(self.save_dir, "class_codebook_analysis")
+            self.analyze_distributions(
+                counters=self.class_counters,
+                name="Class",
+                save_dir=class_dist_dir,
+                topk=50,
+                labels=list(range(len(self.class_names))),
+                names=self.class_names,
+                annotate=True,
+            )
+
+        # Per-spatial position codebook usage
+        if self.spatial_shape is not None:
+            spatial_dist_dir = os.path.join(self.save_dir, "spatial_codebook_analysis")
+            H, W = self.spatial_shape
+
+            # Scheme A: Generate labels and names by rows
+            labels = [i // W for i in range(self.num_spatial_positions)]
+            names = [f"({i//W},{i%W})" for i in range(H * W)]
+
+            # # Scheme B: Generate labels and names by radius
+            # cy, cx = (H-1)/2, (W-1)/2
+            # labels = []
+            # names = []
+            # for i in range(self.num_spatial_positions):
+            #     y, x = divmod(i, W)
+            #     radius = int(round(math.sqrt((y - cy) ** 2 + (x - cx) ** 2)))
+            #     labels.append(radius)
+            #     names.append(f"({y},{x})")
+
+            os.makedirs(spatial_dist_dir, exist_ok=True)
+            self.analyze_distributions(
+                counters=self.spatial_counters,
+                name="spatial",
+                save_dir=spatial_dist_dir,
+                topk=50,
+                labels=labels,
+                names=names,
+                annotate=False,
+            )
+            
+            # Top-K Random Reconstrunction
+            topk=10
+            print_topk_per_position(
+                self.spatial_counters,
+                H,
+                W,
+                k=topk,
+                logger=self.logger,
+            )
+            
+            latent=sample_latent_from_topk(
+                self.spatial_counters,
+                H,
+                W,
+                k=topk,
+                mode="weighted",
+                device=self.device,
+            )
+            
+            recon_path = f"{self.save_dir}/reconstruction_from_top{topk}_per_position.png"
+            reconstruct_from_latent(
+                model=self.model,
+                latent_indices=latent,
+                save_path=recon_path,
+            )
 
 
 class Visualizer(InferenceModule):
@@ -294,10 +462,12 @@ def prepare_modules(run_config, codebook_size, class_names):
         "codebook_per_class", False
     ):
         track_per_class = run_config.get("codebook_per_class", False)
+        track_spatial_shape = run_config.get("codebook_spatial_shape", None)
         codebook_tracker = CodebookUsageTracker(
             codebook_size=codebook_size,
             class_names=class_names,
             track_per_class=track_per_class,
+            spatial_shape=track_spatial_shape,  # Example spatial shape, modify as needed
         )
         modules.append(codebook_tracker)
 
@@ -307,6 +477,88 @@ def prepare_modules(run_config, codebook_size, class_names):
         modules.append(visualizer)
 
     return modules
+
+class RelabeledSubset(torch.utils.data.Dataset):
+    def __init__(self, subset, label_mapping):
+        self.subset = subset
+        self.label_mapping = label_mapping  # old_label -> new_label
+
+    def __len__(self):
+        return len(self.subset)
+
+    def __getitem__(self, idx):
+        sample = self.subset[idx]
+
+        if isinstance(sample, dict):
+            sample = dict(sample)
+            old_label = sample["label"]
+            sample["label"] = self.label_mapping[int(old_label)]
+            return sample
+
+        elif isinstance(sample, (tuple, list)):
+            x, y = sample
+            return x, self.label_mapping[int(y)]
+
+        else:
+            raise TypeError("Unsupported sample format")
+
+
+def filter_dataset_by_class(dataset, target_class_names, class_list, logger=None):
+    """Filter dataset to only include samples of the target class.
+
+    Args:
+        dataset: Dataset object with 'label' attribute.
+        target_class_name: Name of the target class to filter.
+        class_list: List of all class names in the dataset.
+    Returns:
+        Filtered Subset of the dataset.
+    """
+    if isinstance(target_class_names, str):
+        target_class_names = [target_class_names]
+
+    target_indices = []
+    for name in target_class_names:
+        if name not in class_list:
+            raise ValueError(f"Class name '{name}' not found in class list.")
+        target_indices.append(class_list.index(name))
+    old_to_new = {
+        old: new for new, old in enumerate(target_indices)
+    }
+    target_indices_set = set(target_indices)
+    indices = []
+
+    if hasattr(dataset, "ds") and hasattr(dataset.ds, "targets"):
+        # For datasets like CIFAR10Dataset
+        targets = dataset.ds.targets
+        indices = [i for i, label in enumerate(targets) if label in target_indices_set]
+    elif hasattr(dataset, "targets"):
+        print(
+            f"Fast filtering using dataset.targets for class '{target_class_names}'..."
+        )
+        indices = [i for i, t in enumerate(dataset.targets) if t in target_indices_set]
+    else:
+        # For other datasets, iterate through samples
+        for i in tqdm(range(len(dataset)), desc=f"Filtering {target_class_names}"):
+            sample = dataset[i]
+            label = None
+
+            # For datasets returning dict samples
+            if isinstance(sample, dict) and "label" in sample:
+                label = sample["label"]
+            # For datasets returning tuple samples (image, label)
+            elif isinstance(sample, (tuple, list)) and len(sample) > 1:
+                label = sample[1]
+
+            if label in target_indices_set:
+                indices.append(i)
+
+    if logger is not None:
+        logger.info(
+            f"Filtered {len(indices)} samples for class '{target_class_names}'."
+        )
+    filtered_subset = Subset(dataset, indices)
+    relabeled_subset = RelabeledSubset(filtered_subset, old_to_new)
+    return relabeled_subset
 
 
 def decode_images(indices, model, num_categories):
@@ -383,6 +635,99 @@ def inference_step(batch, model, device):
     return {"x": x, "x_hat": x_hat, "y": y, "indices": indices}
 
 
+def print_topk_per_position(
+    spatial_counters: torch.Tensor,
+    H: int,
+    W: int,
+    k: int = 10,
+    logger=None,
+):
+    """
+    spatial_counters: [H*W, codebook_size]
+    """
+    counters = spatial_counters.cpu().numpy()
+
+    logger.info("=" * 80)
+    logger.info(f"Top-{k} codewords per spatial position")
+    logger.info("=" * 80)
+
+    for pos in range(H * W):
+        row = pos // W
+        col = pos % W
+
+        freq = counters[pos]
+        prob = freq / (freq.sum() + 1e-12)
+
+        topk_idx = np.argsort(prob)[-k:][::-1]
+        topk_prob = prob[topk_idx]
+
+        header = f"[pos=({row},{col})]"
+        logger.info(header)
+        for i, (idx, p) in enumerate(zip(topk_idx, topk_prob)):
+            logger.info(f"  {i:02d}: idx={idx:5d}, freq={freq[idx]:8d}, prob={p:.4f}")
+        logger.info("-" * 60)
+
+    if logger is not None:
+        logger.info(f"Printed Top-{k} statistics for all spatial positions.")
+
+
+def sample_latent_from_topk(
+    spatial_counters: torch.Tensor,
+    H: int,
+    W: int,
+    k: int = 10,
+    mode: str = "weighted",  # "uniform" | "weighted"
+    device="cuda",
+):
+    """
+    Return:
+        latent_indices: LongTensor [1, H, W, 1]
+    """
+    counters = spatial_counters.cpu().numpy()
+    sampled = []
+
+    for pos in range(H * W):
+        freq = counters[pos]
+        prob = freq / (freq.sum() + 1e-12)
+
+        topk_idx = np.argsort(prob)[-k:]
+
+        if mode == "uniform":
+            choice = np.random.choice(topk_idx)
+        elif mode == "weighted":
+            topk_prob = prob[topk_idx]
+            topk_prob = topk_prob / topk_prob.sum()
+            choice = np.random.choice(topk_idx, p=topk_prob)
+        else:
+            raise ValueError(f"Unknown mode: {mode}")
+
+        sampled.append(choice)
+
+    sampled = np.array(sampled).reshape(1, H, W, 1)
+    return torch.from_numpy(sampled).long().to(device)
+
+
+def reconstruct_from_latent(
+    model,
+    latent_indices: torch.Tensor,
+    save_path: str,
+):
+    """
+    latent_indices: [1, H, W, num_latent_vars]
+    """
+    with torch.no_grad():
+        if isinstance(model, JSA):
+            x_hat = model.decode(latent_indices)
+        elif isinstance(model, VQModel):
+            x_hat = model.decode_code(latent_indices.squeeze(-1))
+
+    save_images_grid(
+        images=x_hat.cpu(),
+        save_path=save_path,
+        nrow=1,
+    )
+
+
 # ================= Main Inference Script ================= #
 
 
@@ -399,6 +744,7 @@ def main(exp_dir, config_path, checkpoint_path, run_config=None):
             "visualization": True,
             "codebook_global": True,
             "codebook_per_class": False,
+            "target_class_names": None,
         }
 
     # Setup logging and directories
@@ -438,7 +784,7 @@ def main(exp_dir, config_path, checkpoint_path, run_config=None):
     model.eval()
 
     # Prepare test data
-    test_dataset = CIFAR10Dataset(root="./data/cifar10", train=False)
+    test_dataset = CIFAR10Dataset(root="./data/cifar10", train=True)
     test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
 
     CIFAR10_CLASSES = [
@@ -453,6 +799,13 @@ def main(exp_dir, config_path, checkpoint_path, run_config=None):
         "ship",
         "truck",
     ]
+    target_class_names = run_config.get("target_class_names", None)
+    if target_class_names is not None:
+        logger.info(f"Filtering test dataset for classes: {target_class_names}...")
+        test_dataset = filter_dataset_by_class(
+            test_dataset, target_class_names, CIFAR10_CLASSES, logger=logger
+        )
+        test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
 
     # Get model info
     model_type, num_latent_vars, num_categories, codebook_size = get_model_info(model)
@@ -464,13 +817,15 @@ def main(exp_dir, config_path, checkpoint_path, run_config=None):
     active_modules = prepare_modules(
         run_config,
         codebook_size,
-        CIFAR10_CLASSES,
+        class_names=target_class_names if target_class_names else CIFAR10_CLASSES,
     )
     logger.info(
         f"Active inference modules: {[type(m).__name__ for m in active_modules]}"
     )
     for module in active_modules:
         module.setup(device, logger, infer_dir)
+        if hasattr(module, "set_model"):
+            module.set_model(model)
 
     # ========== Main Inference Loop ========== #
     with torch.no_grad():  # Disable gradient computation
@@ -495,17 +850,21 @@ def main(exp_dir, config_path, checkpoint_path, run_config=None):
 if __name__ == "__main__":
 
     dir_list = [
-        "egs/cifar10/jsa/categorical_prior_conv/2026-01-15_15-41-30",
+        # "egs/cifar10/jsa/categorical_prior_conv/2026-01-15_15-41-30",
+        "egs/cifar10/jsa/categorical_prior_conv/2026-01-26_00-06-47",
     ]
+    target_class_names = None
 
     run_config = {
         "metrics": True,
         "visualization": True,
         "codebook_global": True,
-        "codebook_per_class": True,
+        "codebook_per_class": False,
+        "codebook_spatial_shape": (8, 8),  # Example spatial shape
+        "target_class_names": target_class_names,
     }
 
     for exp_dir in dir_list:
         config_path = f"{exp_dir}/config.yaml"
-        checkpoint_path = f"{exp_dir}/checkpoints/epoch=000193.ckpt"
+        checkpoint_path = f"{exp_dir}/checkpoints/last.ckpt"
         main(exp_dir, config_path, checkpoint_path, run_config=run_config)

@@ -15,8 +15,8 @@ from src.utils.codebook_utils import plot_codebook_usage_distribution
 class VQModel(LightningModule):
     def __init__(
         self,
-        encoder: ConvEncoder,
-        decoder: ConvDecoder,
+        encoder: Encoder,
+        decoder: Decoder,
         loss: VQLPIPSWithDiscriminator,
         quantizer: VectorQuantizer,
         base_learning_rate=2e-4,
@@ -28,8 +28,8 @@ class VQModel(LightningModule):
     ):
         super().__init__()
         self.image_key = image_key
-        self.encoder: ConvEncoder = encoder
-        self.decoder: ConvDecoder = decoder
+        self.encoder: Encoder = encoder
+        self.decoder: Decoder = decoder
         self.loss: VQLPIPSWithDiscriminator = loss
         self.quantizer: VectorQuantizer = quantizer
         self.base_learning_rate = base_learning_rate

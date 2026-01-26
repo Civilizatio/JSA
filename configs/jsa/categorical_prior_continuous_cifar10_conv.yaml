@@ -65,7 +65,7 @@ model:
     base_lr_proposal: 4.5e-07
     base_lr_discriminator: 1.86e-07
     num_mis_steps: 20
-    cache_start_epoch: 20000
+    cache_start_epoch: 180
 
     init_from_ckpt: null
     init_mode: resume # "resume" or "warm_start"
@@ -98,7 +98,7 @@ data:
   class_path: src.data.cifar10.CIFAR10DataModule
   init_args:
     root: ./data/cifar10
-    batch_size: 450
+    batch_size: 128
     num_workers: 4
 
 trainer:

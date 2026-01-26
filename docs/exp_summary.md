@@ -63,4 +63,28 @@ batch_size: 128(4)
 - 学习率设置为 4.5e-06，等价学习率为 2e-3 [](egs/cifar10/vqgan/vq_gan_cifar10/2026-01-19_10-59-58)
 - 设置为 4.5e-06，加上 perceptual loss [](egs/cifar10/vqgan/vq_gan_cifar10/2026-01-19_11-01-50)
 
+## 统计码本的分布情况
 
+这里主要想要证明的是，对于不同类别，不同位置的 codeword， 我们建模为独立同分布的 categorical distribution 是不合理的。
+
+因此，我们需要统计每个 codeword 在不同类别，不同位置上的使用频率。
+
+一开始画出不同类别以及不同位置的 codeword 使用频率的直方图，但由于码本大小 1024，不便于观察。
+
+后面改为统计一些分布上的特征：
+
+1. codebook 分布之间的距离矩阵。由于我们希望距离是对称的，这里使用 JS 散度来衡量。
+    JS 散度：
+    $$JS(P||Q) = 0.5 * (KL(P||M) + KL(Q||M))$$
+    其中 $M = 0.5 * (P + Q)$
+2. codebook 使用的 top-k support overlap。即对于每个 codebook 分布，取其 top-k 的 codeword，计算不同 codebook 之间 top-k codeword 的重合度。
+   重合度定义为：
+   $$overlap(P, Q) = \frac{|topk(P) \cap topk(Q)|}{k}$$
+3. 每个 codebook 分布视为一个 1024 维的向量，通过 PCA/UMAP 降维到 2 维进行可视化，观察不同类别、不同位置的 codebook 分布的聚类情况。
+
+如果这些 codebook 分布是独立同分布的，那么我们期望看到：
+1. 距离矩阵中不同类别、不同位置的 codebook 之间的距离应该比较接近，没有明显的聚类现象。
+2. top-k support overlap 应该比较高，说明不同 codebook 之间有较多重合的 codeword。
+3. 降维后的可视化图中，不同类别、不同位置的 codebook 分布应该混杂在一起，没有明显的聚类现象。
+
+最后，我们可以使用 top-k 的 codeword 来进行图像的重构。
