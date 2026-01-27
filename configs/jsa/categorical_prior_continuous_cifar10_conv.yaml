@@ -73,8 +73,8 @@ model:
 
     sigma_controller:
       _target_: src.utils.controllers.SigmaController
-      mode: scheduled
-      init_sigma: 0.2
+      mode: fixed # Options: "scheduled", "adaptive", "fixed"
+      init_sigma: 0.1
       clamp_to_schedule: true
 
       scheduler:

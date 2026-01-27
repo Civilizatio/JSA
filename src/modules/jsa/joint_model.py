@@ -415,8 +415,20 @@ class JointModelCategoricalGaussian(BaseJointModel):
         
         x_expanded = x.unsqueeze(1)
         
-        diff =  (mu_new-mu_old)*(x_expanded - 0.5*(mu_new + mu_old))/(self.sigma**2)
-        log_prob_diff = diff.sum(dim=list(range(2, diff.dim())))  # sum over dimensions, shape [B, num_samples]
+        # Using the theoretical form:
+        # -0.5/sigma^2 * ( ||x - mu_new||^2 - ||x - mu_old||^2 )
+        # 1. Squared errors
+        se_new = (x_expanded - mu_new) ** 2  # [B, num_samples, ...]
+        se_old = (x_expanded - mu_old) ** 2  # [B, num_samples, ...]
+        # 2. Sum over data dimensions
+        sse_new = se_new.sum(dim=list(range(2, se_new.dim())))  # [B, num_samples]
+        sse_old = se_old.sum(dim=list(range(2, se_old.dim())))  # [B, num_samples]
+        # 3. Difference
+        log_prob_diff = -0.5 / (self.sigma ** 2) * (sse_new - sse_old)  # shape [B, num_samples]
+        
+        # Below is an equivalent form that is more likely to cause numerical issues
+        # diff =  (mu_new-mu_old)*(x_expanded - 0.5*(mu_new + mu_old))/(self.sigma**2)
+        # log_prob_diff = diff.sum(dim=list(range(2, diff.dim())))  # sum over dimensions, shape [B, num_samples]
         
         return log_prob_diff  # shape [B, num_samples]
 

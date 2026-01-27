@@ -166,10 +166,10 @@ class CodebookUsageTracker(InferenceModule):
                 dtype=torch.long,
                 device=device,
             )
-            
+
     def set_model(self, model):
         self.model = model
-    
+
     def update(self, batch, outputs):
         indices = outputs["indices"]  # [B*H*W*num_latent_vars, ]
         y = outputs.get("y", None)  # [B, ] or None
@@ -354,9 +354,9 @@ class CodebookUsageTracker(InferenceModule):
                 names=names,
                 annotate=False,
             )
-            
+
             # Top-K Random Reconstrunction
-            topk=10
+            topk = 10
             print_topk_per_position(
                 self.spatial_counters,
                 H,
@@ -364,8 +364,8 @@ class CodebookUsageTracker(InferenceModule):
                 k=topk,
                 logger=self.logger,
             )
-            
-            latent=sample_latent_from_topk(
+
+            latent = sample_latent_from_topk(
                 self.spatial_counters,
                 H,
                 W,
@@ -373,8 +373,10 @@ class CodebookUsageTracker(InferenceModule):
                 mode="weighted",
                 device=self.device,
             )
-            
-            recon_path = f"{self.save_dir}/reconstruction_from_top{topk}_per_position.png"
+
+            recon_path = (
+                f"{self.save_dir}/reconstruction_from_top{topk}_per_position.png"
+            )
             reconstruct_from_latent(
                 model=self.model,
                 latent_indices=latent,
@@ -478,6 +480,7 @@ def prepare_modules(run_config, codebook_size, class_names):
 
     return modules
 
+
 class RelabeledSubset(torch.utils.data.Dataset):
     def __init__(self, subset, label_mapping):
         self.subset = subset
@@ -521,9 +524,7 @@ def filter_dataset_by_class(dataset, target_class_names, class_list, logger=None
         if name not in class_list:
             raise ValueError(f"Class name '{name}' not found in class list.")
         target_indices.append(class_list.index(name))
-    old_to_new = {
-        old: new for new, old in enumerate(target_indices)
-    }
+    old_to_new = {old: new for new, old in enumerate(target_indices)}
     target_indices_set = set(target_indices)
     indices = []
 
@@ -785,7 +786,7 @@ def main(exp_dir, config_path, checkpoint_path, run_config=None):
 
     # Prepare test data
     test_dataset = CIFAR10Dataset(root="./data/cifar10", train=True)
-    test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
+    test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False)
 
     CIFAR10_CLASSES = [
         "airplane",
@@ -829,13 +830,43 @@ def main(exp_dir, config_path, checkpoint_path, run_config=None):
 
     # ========== Main Inference Loop ========== #
     with torch.no_grad():  # Disable gradient computation
+        model.sampler.to(device)
         for batch in tqdm(test_loader):
 
-            outputs = inference_step(batch, model, device)
+            # outputs = inference_step(batch, model, device)
+            batch = {
+                k: v.to(device) if isinstance(v, torch.Tensor) else v
+                for k, v in batch.items()
+            }
+            x = model.get_input(batch, model.dataset_key["image_key"])
+            idx = model.get_input(batch, model.dataset_key["index_key"])
+            logits = model.proposal_model(x)[0]
+            probs = torch.softmax(logits, dim=-1)
+            logger.info(f"Probs shape: {probs.shape}. Showing Top-3 concentration pre positions:")
+            
+            sample_probs=probs[0]
+            H, W, num_latent_vars = sample_probs.shape
 
+            topk_probs, topk_indices = torch.topk(sample_probs, k=3, dim=-1)
+            for h in range(H):
+                for w in range(W):
+                    
+                    vals = topk_probs[h, w].tolist()
+                    inds = topk_indices[h, w].tolist()
+                    
+                    top3_str=", ".join([f"{idx}: {p:.4f}" for idx, p in zip(inds, vals)])
+                    logger.info(f"Position ({h},{w}) Top-3: {top3_str}")
+            
+            h = model.sampler.sample(
+                x, idx=idx, num_steps=4, parallel=False, return_all=True
+            )
+
+            logger.info(f"Sampled latent h with shape: {h.shape}")
+            logger.info(f"h: {h}")
+            logger.info(f"h min/max: {h.min().item()}/{h.max().item()}")
             # Update all modules
-            for module in active_modules:
-                module.update(batch, outputs)
+            # for module in active_modules:
+            #     module.update(batch, outputs)
 
     # ========== Finalization ========== #
     logger.info("Finalizing inference modules...")
@@ -856,11 +887,11 @@ if __name__ == "__main__":
     target_class_names = None
 
     run_config = {
-        "metrics": True,
-        "visualization": True,
-        "codebook_global": True,
+        "metrics": False,
+        "visualization": False,
+        "codebook_global": False,
         "codebook_per_class": False,
-        "codebook_spatial_shape": (8, 8),  # Example spatial shape
+        "codebook_spatial_shape": None,  # Example spatial shape
         "target_class_names": target_class_names,
     }
 
