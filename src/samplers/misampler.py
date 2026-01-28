@@ -215,8 +215,37 @@ class MISampler(BaseSampler):
         accept_prob = torch.exp(torch.clamp(log_accept, max=0.0, min=-100.0))
         return accept_prob
 
+    def _sample_block_mask(self, h_shape, strategy="row"):
+        """Sample block mask for block-wise MIS sampling
+
+        Args:
+            h_shape: Shape of the mask, e.g., [batch_size, num_samples, H, W, num_latent_vars]
+            strategy: Strategy for block sampling, supported: 'row', 'column', 'patch', 'none'
+        Returns:
+            mask: Block mask, shape same as input shape, dtype=torch.bool
+        """
+        mask = torch.zeros(h_shape, dtype=torch.bool,device=next(self.proposal_model.parameters()).device)
+        
+        if strategy == "row":
+            row = torch.randint(0, h_shape[2], (1,)).item()
+            mask[:, :, row, :, :] = True
+        elif strategy == "column":
+            col = torch.randint(0, h_shape[3], (1,)).item()
+            mask[:, :, :, col, :] = True
+        elif strategy == "patch":
+            patch_size = 2  # fixed patch size
+            row = torch.randint(0, h_shape[2] - patch_size + 1, (1,)).item()
+            col = torch.randint(0, h_shape[3] - patch_size + 1, (1,)).item()
+            mask[:, :, row : row + patch_size, col : col + patch_size, :] = True
+        elif strategy == "none":
+            mask[:] = True
+        else:
+            raise ValueError(f"Unsupported block sampling strategy: {strategy}")
+        return mask
+        
+    
     @torch.no_grad()
-    def step(self, x, idx=None, h_old=None):
+    def step(self, x, idx=None, h_old=None, strategy="none"):
         """
         Perform single MIS step:
             propose h'
@@ -234,9 +263,12 @@ class MISampler(BaseSampler):
             h_old = self._init_h_old(idx, self.proposal_model.sample_latent(x))
 
         # Propose from q_phi(h|x)
-        h_new = self.proposal_model.sample_latent(
+        h_new_full = self.proposal_model.sample_latent(
             x
         )  # [batch_size, num_samples, ..., num_latent_vars]
+        block_mask = self._sample_block_mask(h_new_full.shape, strategy=strategy)
+        h_new = h_old.clone()
+        h_new[block_mask] = h_new_full[block_mask]
 
         # Compute acceptance probability
         # accept_prob = self._cal_acceptance_prob(x, h_new, h_old)  # [batch_size, num_samples]
@@ -272,7 +304,7 @@ class MISampler(BaseSampler):
         return h_next
 
     @torch.no_grad()
-    def sample(self, x, idx=None, num_steps=1, parallel=False, return_all=False):
+    def sample(self, x, idx=None, num_steps=1, parallel=False, return_all=False, strategy="none"):
         """Generate samples using MIS sampler.
 
 
@@ -286,6 +318,10 @@ class MISampler(BaseSampler):
         #     )
 
         if parallel:
+            import warnings
+            warnings.warn(
+                "Parallel sampling is enabled. There is no block-wise sampling in parallel mode."
+            )
             return self._sample_parallel(
                 x, idx=idx, num_steps=num_steps, return_all=return_all
             )
@@ -294,7 +330,7 @@ class MISampler(BaseSampler):
                 h_list = []
             h_old = None
             for _ in range(num_steps):
-                h_old = self.step(x, idx=idx, h_old=h_old)
+                h_old = self.step(x, idx=idx, h_old=h_old, strategy=strategy)
                 if return_all:
                     h_list.append(h_old)
             if return_all:

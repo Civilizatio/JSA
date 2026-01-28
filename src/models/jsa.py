@@ -19,7 +19,6 @@ from src.modules.losses.jsa_gan import JSAGANLoss
 import math
 
 
-
 class JSA(LightningModule):
     def __init__(
         self,
@@ -36,6 +35,8 @@ class JSA(LightningModule):
         init_mode: str = "resume",  # "resume" or "warm_start"
         init_strict: bool = False,
         sigma_controller=None,
+        global_only_steps: int = 10000,
+        block_strategy_prob: float = 0.5,
     ):
         super().__init__()
         # self.save_hyperparameters(ignore=["joint_model", "proposal_model", "sampler", "gan_loss"])
@@ -58,6 +59,8 @@ class JSA(LightningModule):
         self.lr_discriminator = base_lr_discriminator
         self.num_mis_steps = num_mis_steps
         self.cache_start_epoch = cache_start_epoch
+        self.global_only_steps = global_only_steps
+        self.block_strategy_prob = block_strategy_prob
 
         self.init_from_ckpt = init_from_ckpt
         self.init_mode = init_mode
@@ -72,7 +75,7 @@ class JSA(LightningModule):
         self.train_logger = None  # Not initialized yet
 
         self.log_codebook_utilization_test = False
-        
+
         self.grad_norm_modules = {
             "joint_model": self.joint_model,
             "proposal_model": self.proposal_model,
@@ -81,12 +84,11 @@ class JSA(LightningModule):
     def setup(self, stage=None):
         device = self.device
         self.sampler.to(device)
-        
+
     def get_input(self, batch, key):
         data = batch[key]
         data = data.to(memory_format=torch.contiguous_format)
         return data
-        
 
     def on_fit_start(self):
         """Warm start or resume from checkpoint if specified
@@ -145,25 +147,31 @@ class JSA(LightningModule):
         h = self.proposal_model.encode(x)
         x_hat = self.joint_model.decode(h)
         return x_hat
-    
+
     def encode(self, x):
         h = self.proposal_model.encode(x)
         return h
-    
+
     def decode(self, h):
         x_hat = self.joint_model.decode(h)
         return x_hat
 
     def configure_optimizers(self):
-        
-        batch_size = self.trainer.datamodule.batch_size if self.trainer and self.trainer.datamodule else 1
+
+        batch_size = (
+            self.trainer.datamodule.batch_size
+            if self.trainer and self.trainer.datamodule
+            else 1
+        )
         num_devices = self.trainer.num_devices if self.trainer.num_devices else 1
-        accumulated_batches = self.trainer.accumulate_grad_batches if self.trainer else 1
+        accumulated_batches = (
+            self.trainer.accumulate_grad_batches if self.trainer else 1
+        )
         effective_batch_size = batch_size * num_devices * accumulated_batches
         self.lr_joint = self.base_lr_joint * effective_batch_size
         self.lr_proposal = self.base_lr_proposal * effective_batch_size
         self.lr_discriminator = self.base_lr_discriminator * effective_batch_size
-        
+
         if self.train_logger is not None:
             self.train_logger.info(
                 f"Configuring optimizers with effective batch size {effective_batch_size}, lr_joint {self.lr_joint}, lr_proposal {self.lr_proposal}, lr_discriminator {self.lr_discriminator}"
@@ -172,8 +180,7 @@ class JSA(LightningModule):
             print(
                 f"Configuring optimizers with effective batch size {effective_batch_size}, lr_joint {self.lr_joint}, lr_proposal {self.lr_proposal}, lr_discriminator {self.lr_discriminator}"
             )
-        
-        
+
         opt_joint = torch.optim.Adam(self.joint_model.parameters(), lr=self.lr_joint)
         opt_proposal = torch.optim.Adam(
             self.proposal_model.parameters(), lr=self.lr_proposal
@@ -213,17 +220,33 @@ class JSA(LightningModule):
 
         # Reset acceptance stats
         self.sampler.reset_acceptance_stats()
-    
+
+    def _choose_sampling_strategy(self):
+        if self.global_step < self.global_only_steps:
+            return "none"
+        else:
+            if torch.rand(1).item() < self.block_strategy_prob:
+                return "block"
+            else:
+                return "none"
+
     def training_step(self, batch, batch_idx):
 
-        x = self.get_input(batch, self.dataset_key["image_key"])  # x: [B, C, H, W], idx: [B,]
+        x = self.get_input(
+            batch, self.dataset_key["image_key"]
+        )  # x: [B, C, H, W], idx: [B,]
         idx = self.get_input(batch, self.dataset_key["index_key"])
-        
+
         # MISampling step
         h = self.sampler.sample(
-            x, idx=idx, num_steps=self.num_mis_steps, parallel=False, return_all=False
+            x,
+            idx=idx,
+            num_steps=self.num_mis_steps,
+            parallel=False,
+            return_all=False,
+            strategy=self._choose_sampling_strategy(),
         )  # [B, num_samples, ..., num_latent_vars]
-        
+
         # torch.cuda.empty_cache()
         # Optimizers
         if self.gan_loss is not None:
@@ -322,19 +345,18 @@ class JSA(LightningModule):
             x, idx=idx, num_steps=self.num_mis_steps, parallel=False, return_all=True
         )  # [B, num_samples, ..., num_latent_vars]
         # h = h.squeeze(1)  # [B, ..., num_latent_vars]
-       
+
         # log p(x) ~ log p(x,h) - log q(h|x)
         log_nll = self.joint_model.log_joint_prob_multiple_samples(x, h).mean(
             dim=1
         ) - self.proposal_model.log_conditional_prob(h, x).mean(
             dim=1
         )  # [B,]
-        
+
         x_rec = self.forward(x, idx=idx)
         recon_mse = torch.mean((x - x_rec) ** 2)
 
         return log_nll.detach().cpu().numpy(), recon_mse.detach().cpu().numpy()
-    
 
     # ========================= Checkpointing =========================
 
@@ -361,9 +383,9 @@ class JSA(LightningModule):
                 # we expect that checkpoint was saved from rank0 and all ranks loaded same dict,
                 # but ensure everyone has the same in distributed environment
                 self.sampler.sync_cache()
-                
+
     # ========================= Callback Utilities =========================
-    
+
     def log_images(self, batch, **kwargs):
         log = dict()
         x = self.get_input(batch, self.dataset_key["image_key"])
@@ -371,13 +393,16 @@ class JSA(LightningModule):
         log["inputs"] = x
         log["reconstructions"] = x_rec
         return log
-    
+
     def get_codebook_indices(self, batch):
         x = self.get_input(batch, self.dataset_key["image_key"])
-        h = self.proposal_model.encode(x, sane_index_shape=False)  # [B*H*W*num_latent_vars, 1]
-        indices = encode_multidim_to_index(h, self.proposal_model.num_categories)  # [B*H*W*num_latent_vars, ]
+        h = self.proposal_model.encode(
+            x, sane_index_shape=False
+        )  # [B*H*W*num_latent_vars, 1]
+        indices = encode_multidim_to_index(
+            h, self.proposal_model.num_categories
+        )  # [B*H*W*num_latent_vars, ]
         return indices
-    
+
     def get_codebook_size(self):
         return math.prod(self.proposal_model.num_categories)
-    

@@ -9,5 +9,6 @@ __pycache__/
 *.pyd
 
 egs/
+egs
 
 test.py

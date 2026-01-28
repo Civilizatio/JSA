@@ -65,7 +65,9 @@ model:
     base_lr_proposal: 4.5e-07
     base_lr_discriminator: 1.86e-07
     num_mis_steps: 20
-    cache_start_epoch: 180
+    cache_start_epoch: 200
+    global_only_steps: 15000
+    block_strategy_prob: 0.5
 
     init_from_ckpt: null
     init_mode: resume # "resume" or "warm_start"
@@ -73,7 +75,7 @@ model:
 
     sigma_controller:
       _target_: src.utils.controllers.SigmaController
-      mode: fixed # Options: "scheduled", "adaptive", "fixed"
+      mode: scheduled # Options: "scheduled", "adaptive", "fixed"
       init_sigma: 0.1
       clamp_to_schedule: true
 
@@ -82,8 +84,8 @@ model:
         max_val: 0.2
         min_val: 0.02
         warmup_steps: 10000
-        total_steps: 50000 # if using epochs, make sure to set max_epochs in trainer
-        hold_steps: 10000
+        total_steps: 100000 # if using epochs, make sure to set max_epochs in trainer
+        hold_steps: 30000
         mode: cosine
 
       adaptive_controller:
@@ -147,8 +149,8 @@ trainer:
         sort_by_counter: true
         use_log_scale: false
 
-  max_epochs: 400
-  max_steps: 50000 # higher priority than max_epochs
+  max_epochs: 5500
+  max_steps: 100000 # higher priority than max_epochs
   accelerator: gpu
   devices: [1,2,4,5]
   strategy: ddp_find_unused_parameters_true

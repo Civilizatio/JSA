@@ -785,8 +785,8 @@ def main(exp_dir, config_path, checkpoint_path, run_config=None):
     model.eval()
 
     # Prepare test data
-    test_dataset = CIFAR10Dataset(root="./data/cifar10", train=True)
-    test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False)
+    test_dataset = CIFAR10Dataset(root="./data/cifar10", train=False)
+    test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
 
     CIFAR10_CLASSES = [
         "airplane",
@@ -831,9 +831,9 @@ def main(exp_dir, config_path, checkpoint_path, run_config=None):
     # ========== Main Inference Loop ========== #
     with torch.no_grad():  # Disable gradient computation
         model.sampler.to(device)
-        for batch in tqdm(test_loader):
+        for i, batch in tqdm(enumerate(test_loader), total=len(test_loader)):
 
-            # outputs = inference_step(batch, model, device)
+            outputs = inference_step(batch, model, device)
             batch = {
                 k: v.to(device) if isinstance(v, torch.Tensor) else v
                 for k, v in batch.items()
@@ -858,15 +858,18 @@ def main(exp_dir, config_path, checkpoint_path, run_config=None):
                     logger.info(f"Position ({h},{w}) Top-3: {top3_str}")
             
             h = model.sampler.sample(
-                x, idx=idx, num_steps=4, parallel=False, return_all=True
+                x, idx=idx, num_steps=20, parallel=False, return_all=False
             )
 
             logger.info(f"Sampled latent h with shape: {h.shape}")
             logger.info(f"h: {h}")
             logger.info(f"h min/max: {h.min().item()}/{h.max().item()}")
+            logger.info(f" Acceptance rates per step: {model.sampler.get_acceptance_rate()}")
+            if i >= 10:
+                break
             # Update all modules
-            # for module in active_modules:
-            #     module.update(batch, outputs)
+            for module in active_modules:
+                module.update(batch, outputs)
 
     # ========== Finalization ========== #
     logger.info("Finalizing inference modules...")
@@ -882,16 +885,16 @@ if __name__ == "__main__":
 
     dir_list = [
         # "egs/cifar10/jsa/categorical_prior_conv/2026-01-15_15-41-30",
-        "egs/cifar10/jsa/categorical_prior_conv/2026-01-26_00-06-47",
+        "egs/cifar10/jsa/categorical_prior_conv/2026-01-27_22-00-33",
     ]
-    target_class_names = None
+    target_class_names = ["cat"]
 
     run_config = {
-        "metrics": False,
-        "visualization": False,
-        "codebook_global": False,
+        "metrics": True,
+        "visualization": True,
+        "codebook_global": True,
         "codebook_per_class": False,
-        "codebook_spatial_shape": None,  # Example spatial shape
+        "codebook_spatial_shape": (8, 8),  # Example spatial shape
         "target_class_names": target_class_names,
     }
 
