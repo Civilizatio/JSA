@@ -19,6 +19,8 @@ class VectorQuantizer(nn.Module):
     - e_dim : dimension of embedding
     - beta : commitment cost used in loss term, beta * ||z_e(x)-sg[e]||^2
     _____________________________________________
+    
+    
     """
 
     # NOTE: this class contains a bug regarding beta; see VectorQuantizer2 for
@@ -43,6 +45,13 @@ class VectorQuantizer(nn.Module):
         quantization pipeline:
             1. get encoder input (B,C,H,W)
             2. flatten input to (B*H*W,C)
+            
+        Returns:
+        - z_q: quantized output
+        - loss: VQ loss to optimize
+        - perplexity: perplexity of the encodings, exp(-sum(p*log(p))), p is freq of encodings
+        - min_encodings: one-hot encodings of min_encoding_indices
+        - min_encoding_indices: indices of the selected embeddings
         """
         # reshape z -> (batch, height, width, channel) and flatten
         z = z.permute(0, 2, 3, 1).contiguous()
@@ -253,6 +262,7 @@ class VectorQuantizer2(nn.Module):
         sane_index_shape=False,
         legacy=True,
         in_channels=None,
+        freeze_codebook=False,
     ):
         super().__init__()
         self.n_e = n_e
@@ -262,7 +272,9 @@ class VectorQuantizer2(nn.Module):
 
         self.embedding = nn.Embedding(self.n_e, self.e_dim)
         self.embedding.weight.data.uniform_(-1.0 / self.n_e, 1.0 / self.n_e)
-
+        if freeze_codebook:
+            self.embedding.weight.requires_grad = False
+        
         self.in_channels = in_channels
         if in_channels is not None:
             self.quant_conv = nn.Conv2d(in_channels, e_dim, 1)
@@ -331,12 +343,16 @@ class VectorQuantizer2(nn.Module):
             * torch.einsum(
                 "bd,dn->bn", z_flattened, rearrange(self.embedding.weight, "n d -> d n")
             )
-        )
+        ) # [B*H*W, n_e]
 
         min_encoding_indices = torch.argmin(d, dim=1)
-        z_q = self.embedding(min_encoding_indices).view(z.shape)
-        perplexity = None
-        min_encodings = None
+        z_q = self.embedding(min_encoding_indices).view(z.shape) # [B*H*W, e_dim] -> [B, H, W, e_dim]
+        perplexity = None 
+        
+        probs = F.softmax(-d, dim=1) # [B*H*W, n_e]
+        probs = probs.view(z.shape[0], z.shape[1], z.shape[2], self.n_e) # [B, H, W, n_e]
+        min_encodings = probs # return soft encodings for compatibility
+        
 
         # compute loss for embedding
         if not self.legacy:

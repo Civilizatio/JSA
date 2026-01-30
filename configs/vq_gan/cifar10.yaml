@@ -43,6 +43,7 @@ model:
         remap: null
         sane_index_shape: false
         in_channels: 256
+        freeze_codebook: true
 
     loss:
       class_path: src.modules.losses.vqperceptual.VQLPIPSWithDiscriminator
@@ -65,7 +66,7 @@ data:
   class_path: src.data.cifar10.CIFAR10DataModule
   init_args:
     root: ./data/cifar10
-    batch_size: 450
+    batch_size: 128
     num_workers: 4
 
 trainer:

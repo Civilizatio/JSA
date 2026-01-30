@@ -64,7 +64,7 @@ tensorboard --logdir=egs/continuous_mnist/categorical_prior/version_11 --port=60
 
 ``` bash
 
-tensorboard --logdir=egs/cifar10/jsa/categorical_prior_conv/2026-01-15_15-43-39 --port=6023
+tensorboard --logdir=egs/cifar10/jsa/categorical_prior_conv --port 6023
 ```
 
 ``` bash

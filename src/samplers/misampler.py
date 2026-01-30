@@ -232,7 +232,7 @@ class MISampler(BaseSampler):
         elif strategy == "column":
             col = torch.randint(0, h_shape[3], (1,)).item()
             mask[:, :, :, col, :] = True
-        elif strategy == "patch":
+        elif strategy == "block":
             patch_size = 2  # fixed patch size
             row = torch.randint(0, h_shape[2] - patch_size + 1, (1,)).item()
             col = torch.randint(0, h_shape[3] - patch_size + 1, (1,)).item()

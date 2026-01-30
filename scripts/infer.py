@@ -830,43 +830,86 @@ def main(exp_dir, config_path, checkpoint_path, run_config=None):
 
     # ========== Main Inference Loop ========== #
     with torch.no_grad():  # Disable gradient computation
-        model.sampler.to(device)
+
         for i, batch in tqdm(enumerate(test_loader), total=len(test_loader)):
 
             outputs = inference_step(batch, model, device)
-            batch = {
-                k: v.to(device) if isinstance(v, torch.Tensor) else v
-                for k, v in batch.items()
-            }
-            x = model.get_input(batch, model.dataset_key["image_key"])
-            idx = model.get_input(batch, model.dataset_key["index_key"])
-            logits = model.proposal_model(x)[0]
-            probs = torch.softmax(logits, dim=-1)
-            logger.info(f"Probs shape: {probs.shape}. Showing Top-3 concentration pre positions:")
             
-            sample_probs=probs[0]
-            H, W, num_latent_vars = sample_probs.shape
+            if isinstance(model, JSA):
+                batch = {
+                    k: v.to(device) if isinstance(v, torch.Tensor) else v
+                    for k, v in batch.items()
+                }
+                x = model.get_input(batch, model.dataset_key["image_key"])
+                logits = model.proposal_model(x)[0]
+                probs = torch.softmax(logits, dim=-1)
+                
 
-            topk_probs, topk_indices = torch.topk(sample_probs, k=3, dim=-1)
-            for h in range(H):
-                for w in range(W):
-                    
-                    vals = topk_probs[h, w].tolist()
-                    inds = topk_indices[h, w].tolist()
-                    
-                    top3_str=", ".join([f"{idx}: {p:.4f}" for idx, p in zip(inds, vals)])
-                    logger.info(f"Position ({h},{w}) Top-3: {top3_str}")
-            
-            h = model.sampler.sample(
-                x, idx=idx, num_steps=20, parallel=False, return_all=False
-            )
+                sample_probs = probs[0]
+                logger.info(
+                    f"Probs shape: {probs.shape}. Showing Top-3 concentration pre positions:"
+                )
+                H, W, _ = sample_probs.shape
 
-            logger.info(f"Sampled latent h with shape: {h.shape}")
-            logger.info(f"h: {h}")
-            logger.info(f"h min/max: {h.min().item()}/{h.max().item()}")
-            logger.info(f" Acceptance rates per step: {model.sampler.get_acceptance_rate()}")
-            if i >= 10:
-                break
+                topk_probs, topk_indices = torch.topk(sample_probs, k=3, dim=-1)
+                for h in range(H):
+                    for w in range(W):
+
+                        vals = topk_probs[h, w].tolist()
+                        inds = topk_indices[h, w].tolist()
+
+                        top3_str = ", ".join(
+                            [f"{idx}: {p:.4f}" for idx, p in zip(inds, vals)]
+                        )
+                        logger.info(f"Position ({h},{w}) Top-3: {top3_str}")
+                if hasattr(model, "sampler"):
+                    model.sampler.to(device)
+                    h = model.sampler.sample(
+                        x=x, num_steps=20, parallel=False, return_all=False
+                    )
+
+                logger.info(f"Sampled latent h with shape: {h.shape}")
+                logger.info(f"h: {h}")
+                logger.info(f"h min/max: {h.min().item()}/{h.max().item()}")
+                logger.info(
+                    f" Acceptance rates per step: {model.sampler.get_acceptance_rate()}"
+                )
+                if i >= 10:
+                    break
+            elif isinstance(model, VQModel):
+                batch = {
+                    k: v.to(device) if isinstance(v, torch.Tensor) else v
+                    for k, v in batch.items()
+                }
+                
+                x = model.get_input(batch, model.dataset_key["image_key"])
+                quantized, _, info = model.encode(x)
+                probs = info[1]  # Assuming info[1] contains the probabilities
+                
+                sample_probs = probs[0]  # First sample in the batch
+                logger.info(
+                    f"Probs shape: {probs.shape}. Showing Top-3 concentration pre positions:"
+                )
+                H, W, _ = sample_probs.shape
+                topk_probs, topk_indices = torch.topk(sample_probs, k=3, dim=-1)
+                for h in range(H):
+                    for w in range(W):
+                        vals = topk_probs[h, w].tolist()
+                        inds = topk_indices[h, w].tolist()
+                        top3_str = ", ".join(
+                            [f"{idx}: {p:.4f}" for idx, p in zip(inds, vals)]
+                        )
+                        logger.info(f"Position ({h},{w}) Top-3: {top3_str}")
+                embedding = model.quantizer.embedding.weight
+                # 计算每个codeword的norm
+                codeword_norms = torch.norm(embedding, dim=1)
+                logger.info(f"Codeword norms: {codeword_norms}")
+                # 计算不同的codeword之间的距离矩阵
+                codeword_distances = torch.cdist(embedding, embedding, p=2)
+                logger.info(f"Codeword distances shape: {codeword_distances.shape}")
+                logger.info(f"Codeword distances: {codeword_distances}")
+                
+                logger.info(f"Quantized shape: {quantized.shape}")
             # Update all modules
             for module in active_modules:
                 module.update(batch, outputs)
@@ -885,7 +928,8 @@ if __name__ == "__main__":
 
     dir_list = [
         # "egs/cifar10/jsa/categorical_prior_conv/2026-01-15_15-41-30",
-        "egs/cifar10/jsa/categorical_prior_conv/2026-01-27_22-00-33",
+        # "egs/cifar10/jsa/categorical_prior_conv/2026-01-27_22-00-33",
+        "egs/cifar10/vqgan/vq_gan_cifar10/2026-01-19_00-09-59",
     ]
     target_class_names = ["cat"]
 

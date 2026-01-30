@@ -65,7 +65,7 @@ model:
     base_lr_proposal: 4.5e-07
     base_lr_discriminator: 1.86e-07
     num_mis_steps: 20
-    cache_start_epoch: 200
+    cache_start_epoch: 600
     global_only_steps: 15000
     block_strategy_prob: 0.5
 
@@ -83,7 +83,7 @@ model:
         _target_: src.utils.schedulers.SigmaScheduler
         max_val: 0.2
         min_val: 0.02
-        warmup_steps: 10000
+        warmup_steps: 20000
         total_steps: 100000 # if using epochs, make sure to set max_epochs in trainer
         hold_steps: 30000
         mode: cosine

@@ -15,8 +15,8 @@ from src.utils.codebook_utils import plot_codebook_usage_distribution
 class VQModel(LightningModule):
     def __init__(
         self,
-        encoder: Encoder,
-        decoder: Decoder,
+        encoder: ConvEncoder,
+        decoder: ConvDecoder,
         loss: VQLPIPSWithDiscriminator,
         quantizer: VectorQuantizer,
         base_learning_rate=2e-4,
@@ -28,8 +28,8 @@ class VQModel(LightningModule):
     ):
         super().__init__()
         self.image_key = image_key
-        self.encoder: Encoder = encoder
-        self.decoder: Decoder = decoder
+        self.encoder: ConvEncoder = encoder
+        self.decoder: ConvDecoder = decoder
         self.loss: VQLPIPSWithDiscriminator = loss
         self.quantizer: VectorQuantizer = quantizer
         self.base_learning_rate = base_learning_rate
@@ -227,10 +227,12 @@ class VQModel(LightningModule):
                 f"Configuring optimizers with effective batch size {effective_batch_size} and learning rate {lr}"
             )
 
+        ae_params = list(self.encoder.parameters()) + list(self.decoder.parameters()) + list(
+            self.quantizer.parameters()
+        )
+        ae_params = [p for p in ae_params if p.requires_grad]
         opt_ae = torch.optim.Adam(
-            list(self.encoder.parameters())
-            + list(self.decoder.parameters())
-            + list(self.quantizer.parameters()),
+            ae_params,
             lr=lr,
             betas=(0.5, 0.9),
         )
