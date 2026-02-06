@@ -7,6 +7,7 @@ model:
       class_path: src.modules.jsa.joint_model.JointModelCategoricalGaussian
       init_args:
         sample_chunk_size: 1
+        sigma: 1.0
         net:
           class_path: src.modules.jsa.jsa_adaptor.ConvDecoder
           init_args:
@@ -67,33 +68,33 @@ model:
     num_mis_steps: 20
     cache_start_epoch: 600
     global_only_steps: 15000
-    block_strategy_prob: 0.5
+    block_strategy_prob: 0.0
 
     init_from_ckpt: null
     init_mode: resume # "resume" or "warm_start"
     init_strict: false
 
-    sigma_controller:
-      _target_: src.utils.controllers.SigmaController
-      mode: scheduled # Options: "scheduled", "adaptive", "fixed"
-      init_sigma: 0.1
-      clamp_to_schedule: true
+    sigma_controller: null
+      # _target_: src.utils.controllers.SigmaController
+      # mode: scheduled # Options: "scheduled", "adaptive", "fixed"
+      # init_sigma: 0.1
+      # clamp_to_schedule: true
 
-      scheduler:
-        _target_: src.utils.schedulers.SigmaScheduler
-        max_val: 0.2
-        min_val: 0.02
-        warmup_steps: 20000
-        total_steps: 100000 # if using epochs, make sure to set max_epochs in trainer
-        hold_steps: 30000
-        mode: cosine
+      # scheduler:
+      #   _target_: src.utils.schedulers.SigmaScheduler
+      #   max_val: 0.2
+      #   min_val: 0.02
+      #   warmup_steps: 20000
+      #   total_steps: 100000 # if using epochs, make sure to set max_epochs in trainer
+      #   hold_steps: 30000
+      #   mode: cosine
 
-      adaptive_controller:
-        _target_: src.utils.controllers.ParameterController
-        param_name: mis_sigma
-        target_range: [0.2, 0.5]
-        adjustment_rate: 0.01
-        mode: exponential
+      # adaptive_controller:
+      #   _target_: src.utils.controllers.ParameterController
+      #   param_name: mis_sigma
+      #   target_range: [0.2, 0.5]
+      #   adjustment_rate: 0.01
+      #   mode: exponential
      
 
 data:

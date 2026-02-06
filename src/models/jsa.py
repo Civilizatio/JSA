@@ -312,6 +312,11 @@ class JSA(LightningModule):
         acceptance_rate = self.sampler.get_acceptance_rate()
         self.log("train/mis_acceptance_rate", acceptance_rate, prog_bar=False)
 
+        if hasattr(self.joint_model, "sigma") and self.joint_model.sigma is not None:
+            self.log(
+                "train/joint_model_sigma", self.joint_model.sigma, prog_bar=True
+            )
+            
         if self.sigma_controller is None:
             return
 

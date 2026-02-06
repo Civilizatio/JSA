@@ -88,8 +88,8 @@ class MetricTracker(InferenceModule):
         x_hat = outputs["x_hat"]
 
         # Basic stats
-        self.stats["mse"] += F.mse_loss(x_hat, x, reduction="sum").item()
-        self.stats["l1"] += F.l1_loss(x_hat, x, reduction="sum").item()
+        self.stats["mse"] += F.mse_loss(x_hat, x, reduction="mean").item() * x.size(0)
+        self.stats["l1"] += F.l1_loss(x_hat, x, reduction="mean").item() * x.size(0)
         self.stats["total_samples"] += x.size(0)
 
         # Advance metrics
@@ -877,39 +877,40 @@ def main(exp_dir, config_path, checkpoint_path, run_config=None):
                 if i >= 10:
                     break
             elif isinstance(model, VQModel):
-                batch = {
-                    k: v.to(device) if isinstance(v, torch.Tensor) else v
-                    for k, v in batch.items()
-                }
+                pass
+                # batch = {
+                #     k: v.to(device) if isinstance(v, torch.Tensor) else v
+                #     for k, v in batch.items()
+                # }
                 
-                x = model.get_input(batch, model.dataset_key["image_key"])
-                quantized, _, info = model.encode(x)
-                probs = info[1]  # Assuming info[1] contains the probabilities
+                # x = model.get_input(batch, model.dataset_key["image_key"])
+                # quantized, _, info = model.encode(x)
+                # probs = info[1]  # Assuming info[1] contains the probabilities
                 
-                sample_probs = probs[0]  # First sample in the batch
-                logger.info(
-                    f"Probs shape: {probs.shape}. Showing Top-3 concentration pre positions:"
-                )
-                H, W, _ = sample_probs.shape
-                topk_probs, topk_indices = torch.topk(sample_probs, k=3, dim=-1)
-                for h in range(H):
-                    for w in range(W):
-                        vals = topk_probs[h, w].tolist()
-                        inds = topk_indices[h, w].tolist()
-                        top3_str = ", ".join(
-                            [f"{idx}: {p:.4f}" for idx, p in zip(inds, vals)]
-                        )
-                        logger.info(f"Position ({h},{w}) Top-3: {top3_str}")
-                embedding = model.quantizer.embedding.weight
-                # 计算每个codeword的norm
-                codeword_norms = torch.norm(embedding, dim=1)
-                logger.info(f"Codeword norms: {codeword_norms}")
-                # 计算不同的codeword之间的距离矩阵
-                codeword_distances = torch.cdist(embedding, embedding, p=2)
-                logger.info(f"Codeword distances shape: {codeword_distances.shape}")
-                logger.info(f"Codeword distances: {codeword_distances}")
+                # sample_probs = probs[0]  # First sample in the batch
+                # logger.info(
+                #     f"Probs shape: {probs.shape}. Showing Top-3 concentration pre positions:"
+                # )
+                # H, W, _ = sample_probs.shape
+                # topk_probs, topk_indices = torch.topk(sample_probs, k=3, dim=-1)
+                # for h in range(H):
+                #     for w in range(W):
+                #         vals = topk_probs[h, w].tolist()
+                #         inds = topk_indices[h, w].tolist()
+                #         top3_str = ", ".join(
+                #             [f"{idx}: {p:.4f}" for idx, p in zip(inds, vals)]
+                #         )
+                #         logger.info(f"Position ({h},{w}) Top-3: {top3_str}")
+                # embedding = model.quantizer.embedding.weight
+                # # 计算每个codeword的norm
+                # codeword_norms = torch.norm(embedding, dim=1)
+                # logger.info(f"Codeword norms: {codeword_norms}")
+                # # 计算不同的codeword之间的距离矩阵
+                # codeword_distances = torch.cdist(embedding, embedding, p=2)
+                # logger.info(f"Codeword distances shape: {codeword_distances.shape}")
+                # logger.info(f"Codeword distances: {codeword_distances}")
                 
-                logger.info(f"Quantized shape: {quantized.shape}")
+                # logger.info(f"Quantized shape: {quantized.shape}")
             # Update all modules
             for module in active_modules:
                 module.update(batch, outputs)
@@ -929,17 +930,18 @@ if __name__ == "__main__":
     dir_list = [
         # "egs/cifar10/jsa/categorical_prior_conv/2026-01-15_15-41-30",
         # "egs/cifar10/jsa/categorical_prior_conv/2026-01-27_22-00-33",
-        "egs/cifar10/vqgan/vq_gan_cifar10/2026-01-19_00-09-59",
+        # "egs/cifar10/vqgan/vq_gan_cifar10/2026-02-05_21-02-55",
+        "egs/cifar10/vqgan/vq_gan_cifar10/2026-02-06_11-08-53"
     ]
     target_class_names = ["cat"]
 
     run_config = {
         "metrics": True,
         "visualization": True,
-        "codebook_global": True,
+        "codebook_global": False,
         "codebook_per_class": False,
         "codebook_spatial_shape": (8, 8),  # Example spatial shape
-        "target_class_names": target_class_names,
+        "target_class_names": None,
     }
 
     for exp_dir in dir_list:

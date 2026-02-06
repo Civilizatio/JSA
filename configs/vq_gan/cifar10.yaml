@@ -1,4 +1,4 @@
-seed_everything: 42
+seed_everything: 23
 
 model:
   class_path: src.models.vq_gan.VQModel
@@ -43,7 +43,7 @@ model:
         remap: null
         sane_index_shape: false
         in_channels: 256
-        freeze_codebook: true
+        freeze_codebook: false
 
     loss:
       class_path: src.modules.losses.vqperceptual.VQLPIPSWithDiscriminator
@@ -56,7 +56,7 @@ model:
         disc_weight: 0.8
         codebook_weight: 1.0
         perceptual_weight: 1.0
-        pixel_loss: "l2"
+        pixel_loss: "l1"
 
     image_key: "image"
     base_learning_rate: 4.5e-06
@@ -101,7 +101,7 @@ trainer:
 
     - class_path: src.utils.callbacks.save_model_summary_callback.LogModelSummary
       init_args:
-        max_depth: 2
+        max_depth: 4
 
     - class_path: src.utils.callbacks.codebook_stats_callback.CodebookStats
       init_args:
@@ -111,8 +111,8 @@ trainer:
         sort_by_counter: true
         use_log_scale: false
   accelerator: gpu
-  devices: [4, 5, 6, 7]
+  devices: [6, 7]
   strategy: ddp_find_unused_parameters_true
-  max_epochs: 5000
-  max_steps: 50000 # higher priority than max_epochs
+  max_epochs: 50000
+  max_steps: 100000 # higher priority than max_epochs
   precision: 32

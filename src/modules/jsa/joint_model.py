@@ -245,8 +245,9 @@ class JointModelCategoricalGaussian(BaseJointModel):
 
         # self.num_latent_vars = num_latent_vars
         self.sample_chunk_size = sample_chunk_size # for sampling in chunks to save memory
-        self.register_buffer("sigma", torch.tensor(float(sigma)))
+        # self.register_buffer("sigma", torch.tensor(float(sigma)))
 
+        self.log_sigma = nn.Parameter(torch.log(torch.tensor(float(sigma))))
         self.net = net
 
     @property
@@ -264,8 +265,15 @@ class JointModelCategoricalGaussian(BaseJointModel):
     def get_last_layer_weight(self):
         return self.net.get_last_layer_weight()
     
+    # def set_sigma(self, sigma):
+    #     self.sigma.fill_(sigma)
     def set_sigma(self, sigma):
-        self.sigma.fill_(sigma)
+        with torch.no_grad():
+            self.log_sigma.fill_(math.log(sigma))
+            
+    @property
+    def sigma(self):
+        return torch.exp(self.log_sigma)
 
     def log_prior_prob(self, h):
         """
@@ -493,9 +501,12 @@ class JointModelCategoricalGaussian(BaseJointModel):
         # x = x.unsqueeze(1)  # [B, 1, ...], broadcast to [B, num_samples, ...]
         batch_size, num_samples = h.shape[0], h.shape[1]
         mse = torch.nn.MSELoss(reduction="mean")
+        D = x.numel() / batch_size  # dimensionality of x
         total_loss = 0.0
         if return_forward:
             mean_x_last = None
+            
+        sigma = self.sigma
         
         for i in range(0, num_samples, self.sample_chunk_size):
             chunk_size = min(self.sample_chunk_size, num_samples - i)
@@ -504,13 +515,22 @@ class JointModelCategoricalGaussian(BaseJointModel):
             
             
             x_expanded = x.unsqueeze(1).expand_as(mean_x_chunk)  # [B, chunk_size, ...]
-            loss_chunk = mse(mean_x_chunk, x_expanded)
+            # Loss should be:
+            # 1/(2*sigma^2) * ||x - mean_x||^2 + D/2 * log(2*pi*sigma^2)
+            # where D is the dimensionality of x
+            # Here, sigma is a learnable parameter, we cannot ignore the latter term
+            # So the loss becomes:
+            # mse = nn.MSELoss(reduction='mean')
+            loss_mse = mse(mean_x_chunk, x_expanded)  # mean squared error over all dimensions
+            # Compute loss for the chunk
+            loss_chunk = loss_mse/(2 * sigma**2) + torch.log(sigma)  # mean over all dimensions
+            # loss_chunk = mse(mean_x_chunk, x_expanded)/(2 * sigma**2)  # mean over all dimensions
             
             # backward if function provided
             if backward_fn is not None:
                 backward_fn(loss_chunk)
                 
-            total_loss += loss_chunk.detach() * chunk_size  # sum up the loss chunks weighted by chunk size
+            total_loss += loss_mse.detach() * chunk_size  # sum up the loss chunks weighted by chunk size
         else:
             if return_forward and mean_x_last is None:
                 mean_x_last = mean_x_chunk[:, -1:, ...]  # last sample in the last chunk, shape [B, 1, ...]

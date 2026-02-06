@@ -113,6 +113,7 @@ class VQModel(LightningModule):
     def on_train_start(self):
         if self.train_logger is not None:
             self.train_logger.info(f"Model:\n{self}")
+            self.train_logger.info(f"loss:\n{self.loss}")
             
     
     def training_step(self, batch, batch_idx):
