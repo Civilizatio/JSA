@@ -40,6 +40,39 @@ class CIFAR10Dataset(JsaDataset):
         }
 
 
+# class CIFAR10DataModule(LightningDataModule):
+#     def __init__(self, root="./data/cifar10", batch_size=64, num_workers=4):
+#         super().__init__()
+#         self.root = root
+#         self.batch_size = batch_size
+#         self.num_workers = num_workers
+
+#     def setup(self, stage=None):
+#         if stage == "fit" or stage is None:
+#             full = CIFAR10Dataset(self.root, train=True)
+#             self.train_set, self.val_set = random_split(full, [45000, 5000])
+#         if stage == "test" or stage is None:
+#             self.test_set = CIFAR10Dataset(self.root, train=False)
+
+#     def train_dataloader(self):
+#         return DataLoader(
+#             self.train_set,
+#             batch_size=self.batch_size,
+#             shuffle=True,
+#             num_workers=self.num_workers,
+#             pin_memory=True,
+#         )
+
+#     def val_dataloader(self):
+#         return DataLoader(
+#             self.val_set, batch_size=self.batch_size, num_workers=self.num_workers, pin_memory=True
+#         )
+
+#     def test_dataloader(self):
+#         return DataLoader(
+#             self.test_set, batch_size=self.batch_size, num_workers=self.num_workers, pin_memory=True
+#         )
+        
 class CIFAR10DataModule(LightningDataModule):
     def __init__(self, root="./data/cifar10", batch_size=64, num_workers=4):
         super().__init__()
@@ -49,8 +82,8 @@ class CIFAR10DataModule(LightningDataModule):
 
     def setup(self, stage=None):
         if stage == "fit" or stage is None:
-            full = CIFAR10Dataset(self.root, train=True)
-            self.train_set, self.val_set = random_split(full, [45000, 5000])
+            self.train_set = CIFAR10Dataset(self.root, train=True)
+            self.val_set = CIFAR10Dataset(self.root, train=False)
         if stage == "test" or stage is None:
             self.test_set = CIFAR10Dataset(self.root, train=False)
 

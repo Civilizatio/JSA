@@ -35,6 +35,14 @@ class VQModel(LightningModule):
         self.base_learning_rate = base_learning_rate
         self.learning_rate = base_learning_rate
         self.dataset_key = DATASET_KEY
+
+        self.quant_conv = torch.nn.Conv2d(
+            self.quantizer.in_channels, self.quantizer.e_dim, kernel_size=1
+        )
+        self.post_quant_conv = torch.nn.Conv2d(
+            self.quantizer.e_dim, self.quantizer.in_channels, kernel_size=1
+        )
+
         if self.image_key is not None:
             self.dataset_key["image_key"] = self.image_key
 
@@ -49,10 +57,10 @@ class VQModel(LightningModule):
 
         self.train_logger = None
         self.automatic_optimization = False
-        
+
         self.log_codebook_utilization_valid = True
         self.log_codebook_utilization_test = False
-        
+
         self.grad_norm_modules = {
             "encoder": self.encoder,
             "decoder": self.decoder,
@@ -72,10 +80,12 @@ class VQModel(LightningModule):
 
     def encode(self, x):
         h = self.encoder(x)
+        h = self.quant_conv(h)
         quant, emb_loss, info = self.quantizer(h)
         return quant, emb_loss, info
 
     def decode(self, quant):
+        quant = self.post_quant_conv(quant)
         dec = self.decoder(quant)
         return dec
 
@@ -114,8 +124,7 @@ class VQModel(LightningModule):
         if self.train_logger is not None:
             self.train_logger.info(f"Model:\n{self}")
             self.train_logger.info(f"loss:\n{self.loss}")
-            
-    
+
     def training_step(self, batch, batch_idx):
         # Get optimizers
         opt_ae, opt_disc = self.optimizers()
@@ -164,13 +173,10 @@ class VQModel(LightningModule):
         opt_disc.zero_grad()
         self.manual_backward(discloss)
         opt_disc.step()
-
-    
     def validation_step(self, batch, batch_idx):
         x = self.get_input(batch, self.dataset_key["image_key"])
         quant, qloss, info = self.encode(x)
         xrec = self.decode(quant)
-        
 
         # The loss function now returns multiple values, we only need the logs for validation
         _, _, log_dict_ae, log_dict_disc = self.loss(
@@ -202,8 +208,7 @@ class VQModel(LightningModule):
             batch_size=batch_size,
         )
 
-        return self.log_dict
-    
+        return log_dict_ae
 
     def configure_optimizers(self):
 
@@ -228,9 +233,14 @@ class VQModel(LightningModule):
                 f"Configuring optimizers with effective batch size {effective_batch_size} and learning rate {lr}"
             )
 
-        ae_params = list(self.encoder.parameters()) + list(self.decoder.parameters()) + list(
-            self.quantizer.parameters()
+        ae_params = (
+            list(self.encoder.parameters())
+            + list(self.decoder.parameters())
+            + list(self.quantizer.parameters())
+            + list(self.quant_conv.parameters())
+            + list(self.post_quant_conv.parameters())
         )
+
         ae_params = [p for p in ae_params if p.requires_grad]
         opt_ae = torch.optim.Adam(
             ae_params,
@@ -258,15 +268,14 @@ class VQModel(LightningModule):
         log["inputs"] = x
         log["reconstructions"] = xrec
         return log
-    
+
     def get_codebook_indices(self, batch):
         x = self.get_input(batch, self.dataset_key["image_key"])
         _, _, info = self.encode(x)
         return info[2]  # indices
-    
+
     def get_codebook_size(self):
         return self.quantizer.n_e
-
 
     def to_rgb(self, x):
         assert self.dataset_key["image_key"] == "segmentation"

@@ -276,9 +276,9 @@ class VectorQuantizer2(nn.Module):
             self.embedding.weight.requires_grad = False
         
         self.in_channels = in_channels
-        if in_channels is not None:
-            self.quant_conv = nn.Conv2d(in_channels, e_dim, 1)
-            self.post_quant_conv = nn.Conv2d(e_dim, in_channels, 1)
+        # if in_channels is not None:
+        #     self.quant_conv = nn.Conv2d(in_channels, e_dim, 1)
+        #     self.post_quant_conv = nn.Conv2d(e_dim, in_channels, 1)
         
         self.remap = remap
         if self.remap is not None:
