@@ -62,9 +62,9 @@ class LPIPS_CIFAR10(nn.Module):
         # Only reserve lower layers of VGG16 suitable for 32x32 images
         self.chns = [64, 128, 256]  # Reduced channels for lower layers
         
-        self.net = vgg16(pretrained=False, requires_grad=False)
-        # del self.net.slice4
-        # del self.net.slice5
+        self.net = vgg16(pretrained=True, requires_grad=False)
+        del self.net.slice4
+        del self.net.slice5
         # Modify the VGG16 architecture to accommodate 32x32 images
         # self.net.slice1 = nn.Sequential(*list(self.net.slice1.children())[:-1])  # Remove last layer of slice1
         # self.net.slice2 = nn.Sequential(*list(self.net.slice2.children())[:-1])  # Remove last layer of slice2

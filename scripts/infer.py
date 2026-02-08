@@ -931,7 +931,7 @@ if __name__ == "__main__":
         # "egs/cifar10/jsa/categorical_prior_conv/2026-01-15_15-41-30",
         # "egs/cifar10/jsa/categorical_prior_conv/2026-01-27_22-00-33",
         # "egs/cifar10/vqgan/vq_gan_cifar10/2026-02-05_21-02-55",
-        "egs/cifar10/vqgan/vq_gan_cifar10/2026-02-07_13-16-01",
+        "egs/cifar10/vqgan/vq_gan_cifar10/2026-02-07_22-42-28",
     ]
     target_class_names = ["cat"]
 
