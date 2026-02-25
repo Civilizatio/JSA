@@ -242,7 +242,7 @@ class JSA(LightningModule):
             x,
             idx=idx,
             num_steps=self.num_mis_steps,
-            parallel=False,
+            parallel=True,
             return_all=False,
             strategy=self._choose_sampling_strategy(),
         )  # [B, num_samples, ..., num_latent_vars]

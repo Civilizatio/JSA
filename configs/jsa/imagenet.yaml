@@ -1,0 +1,164 @@
+seed_everything: 42
+
+model:
+  class_path: src.models.jsa.JSA
+  init_args:
+    joint_model:
+      class_path: src.modules.jsa.joint_model.JointModelCategoricalGaussian
+      init_args:
+        sample_chunk_size: 1
+        sigma: 1.0
+        net:
+          class_path: src.modules.jsa.jsa_adaptor.ConvDecoder
+          init_args:
+            num_categories: [1024]
+            num_latent_vars: 1
+            embedding_dims: [256]
+            final_activation: tanh
+            ch: 128 
+            out_ch: 3
+            ch_mult: [1, 1, 2, 2, 4]
+            num_res_blocks: 2
+            attn_resolutions: [16]
+            activation: swish
+            norm_type: group
+            dropout: 0.0
+            resamp_with_conv: true
+            in_channels: null # not used in decoder
+            resolution: 256
+            z_channels: 256 # should calculated based on embedding_dims and num_latent_vars
+    proposal_model:
+      class_path: src.modules.jsa.proposal_model.ProposalModelCategorical
+      init_args:
+        num_categories: [1024]
+        num_latent_vars: 1
+        net:
+          class_path: src.modules.jsa.jsa_adaptor.ConvEncoder
+          init_args:
+            ch: 128
+            out_ch: 1024 # not used in encoder
+            ch_mult: [1, 1, 2, 2, 4]
+            num_res_blocks: 2
+            attn_resolutions: [16]
+            activation: swish
+            norm_type: group
+            dropout: 0.0
+            resamp_with_conv: true
+            in_channels: 3
+            resolution: 256
+            z_channels: 256 # should calculated based on num_categories and num_latent_vars
+    sampler:
+      _target_: src.samplers.misampler.MISampler
+      use_cache: false # initial value, will be updated during training
+      dataset_size: 50000
+      element_shape: [16, 16] # height and width of latent variable
+    gan_loss: null
+      # class_path: src.models.components.losses.JSAGANLoss
+      # init_args:
+      #   disc_start: 250 # steps
+      #   disc_num_layers: 3 # of conv layers
+      #   disc_in_channels: 3
+      #   disc_factor: 1.0
+      #   disc_weight: 1.0
+      #   disc_loss: hinge
+    
+    base_lr_joint: 4.5e-07
+    base_lr_proposal: 4.5e-07
+    base_lr_discriminator: 1.86e-07
+    num_mis_steps: 20
+    cache_start_epoch: 600
+    global_only_steps: 1500000000
+    block_strategy_prob: 0.0 # if =0, always use global strategy; if =1, always use block strategy; if in between, use block strategy with this probability
+
+    init_from_ckpt: null
+    init_mode: resume # "resume" or "warm_start"
+    init_strict: false
+
+    sigma_controller: null # if null, sigma will be learned as a parameter; otherwise, it will be controlled by the specified controller
+      # _target_: src.utils.controllers.SigmaController
+      # mode: scheduled # Options: "scheduled", "adaptive", "fixed"
+      # init_sigma: 0.1
+      # clamp_to_schedule: true
+
+      # scheduler:
+      #   _target_: src.utils.schedulers.SigmaScheduler
+      #   max_val: 0.2
+      #   min_val: 0.02
+      #   warmup_steps: 20000
+      #   total_steps: 100000 # if using epochs, make sure to set max_epochs in trainer
+      #   hold_steps: 30000
+      #   mode: cosine
+
+      # adaptive_controller:
+      #   _target_: src.utils.controllers.ParameterController
+      #   param_name: mis_sigma
+      #   target_range: [0.2, 0.5]
+      #   adjustment_rate: 0.01
+      #   mode: exponential
+     
+
+data:
+  class_path: src.data.imagenet.ImageNetDataModule
+  init_args:
+    batch_size: 6
+    num_workers: 24
+    image_size: 256
+    random_crop: True
+
+trainer:
+  logger:
+    class_path: lightning.pytorch.loggers.tensorboard.TensorBoardLogger
+    init_args:
+      save_dir: ./egs/imagenet/jsa
+
+  callbacks:
+    # - class_path: src.utils.redirect_print_callback.RedirectPrintCallback
+    #   init_args:
+    #     filename: training.log
+    - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+      init_args:
+        every_n_train_steps: 5000
+        monitor: valid/recon_mse 
+        mode: min
+        save_top_k: 3
+        filename: "{step:06d}-{epoch:06d}"
+        save_last: true
+
+ 
+    - class_path: lightning.pytorch.callbacks.LearningRateMonitor
+      init_args:
+        logging_interval: step
+    - class_path: src.utils.callbacks.grad_norm_callback.GradientNorm
+      init_args:
+        norm_type: 2
+        log_every_n_steps: 1
+
+    - class_path: src.utils.callbacks.save_model_summary_callback.LogModelSummary
+      init_args:
+        max_depth: 2
+
+    - class_path: src.utils.callbacks.image_logger_callback.ImageLogger
+      init_args:
+        batch_frequency: 1000
+        max_images: 24
+        clamp: true
+
+    - class_path: src.utils.callbacks.codebook_stats_callback.CodebookStats
+      init_args:
+        stage: "valid"
+        log_prefix: "valid"
+        plot: true
+        sort_by_counter: true
+        use_log_scale: false
+
+  max_epochs: 5500
+  max_steps: 5000000 # higher priority than max_epochs
+  accelerator: gpu
+  devices: [2,3,4,5]
+  strategy: ddp_find_unused_parameters_true
+  # strategy: auto
+  precision: 32
+  enable_progress_bar: true
+  log_every_n_steps: 25
+  val_check_interval: 5000 # check validation every 5000 training steps
+  limit_val_batches: 200 # only use 100 batches for validation to speed up validation
