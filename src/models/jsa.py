@@ -8,7 +8,7 @@ from typing import Any
 
 from src.samplers.misampler import MISampler
 from src.base.base_jsa_modules import BaseJointModel, BaseProposalModel
-from src.data.cifar10 import DATASET_KEY
+from src.base.base_dataset import JsaDataset
 from src.utils.codebook_utils import (
     encode_multidim_to_index,
     plot_codebook_usage_distribution,
@@ -38,7 +38,6 @@ class JSA(LightningModule):
         sigma_controller=None,
         global_only_steps: int = 10000,
         block_strategy_prob: float = 0.5,
-        dataset_key=None,
     ):
         super().__init__()
         # self.save_hyperparameters(ignore=["joint_model", "proposal_model", "sampler", "gan_loss"])
@@ -69,7 +68,6 @@ class JSA(LightningModule):
         self.init_strict = init_strict
         self._weights_loaded = False  # guard to ensure weights are loaded only once
 
-        self.dataset_key = DATASET_KEY if dataset_key is None else dataset_key
         self.sigma_controller: SigmaController | None = (
             instantiate(sigma_controller) if sigma_controller is not None else None
         )
@@ -234,10 +232,8 @@ class JSA(LightningModule):
 
     def training_step(self, batch, batch_idx):
 
-        x = self.get_input(
-            batch, self.dataset_key["image_key"]
-        )  # x: [B, C, H, W], idx: [B,]
-        idx = self.get_input(batch, self.dataset_key["index_key"])
+        x = self.get_input(batch, JsaDataset.IMAGE_KEY)  # x: [B, C, H, W], idx: [B,]
+        idx = self.get_input(batch, JsaDataset.INDEX_KEY)
 
         # MISampling step
         h = self.sampler.sample(
@@ -315,10 +311,8 @@ class JSA(LightningModule):
         self.log("train/mis_acceptance_rate", acceptance_rate, prog_bar=False)
 
         if hasattr(self.joint_model, "sigma") and self.joint_model.sigma is not None:
-            self.log(
-                "train/joint_model_sigma", self.joint_model.sigma, prog_bar=True
-            )
-            
+            self.log("train/joint_model_sigma", self.joint_model.sigma, prog_bar=True)
+
         if self.sigma_controller is None:
             return
 
@@ -336,8 +330,8 @@ class JSA(LightningModule):
     # ========================= Validation =========================
 
     def validation_step(self, batch, batch_idx):
-        x = self.get_input(batch, self.dataset_key["image_key"])  # x: [B, C, H, W]
-        idx = self.get_input(batch, self.dataset_key["index_key"])  # idx: [B,]
+        x = self.get_input(batch, JsaDataset.IMAGE_KEY)  # x: [B, C, H, W]
+        idx = self.get_input(batch, JsaDataset.INDEX_KEY)  # idx: [B,]
 
         nll, recon_mse = self.get_nll(x, idx=idx)  # [B,]
 
@@ -395,14 +389,14 @@ class JSA(LightningModule):
 
     def log_images(self, batch, **kwargs):
         log = dict()
-        x = self.get_input(batch, self.dataset_key["image_key"])
+        x = self.get_input(batch, JsaDataset.IMAGE_KEY)
         x_rec = self.forward(x)
         log["inputs"] = x
         log["reconstructions"] = x_rec
         return log
 
     def get_codebook_indices(self, batch):
-        x = self.get_input(batch, self.dataset_key["image_key"])
+        x = self.get_input(batch, JsaDataset.IMAGE_KEY)
         h = self.proposal_model.encode(
             x, sane_index_shape=False
         )  # [B*H*W*num_latent_vars, 1]

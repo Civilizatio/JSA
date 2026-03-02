@@ -9,6 +9,9 @@ class JsaDataset(Dataset, ABC):
     Must return (data, index) or (data, label, index) in __getitem__ method,
     for using cache mechanism in JSA training.
     """
+    IMAGE_KEY = "image"
+    LABEL_KEY = "label"
+    INDEX_KEY = "index"
 
     @abstractmethod
     def __init__(self):

@@ -9,11 +9,6 @@ import os
 from dotenv import load_dotenv
 load_dotenv()
 
-DATASET_KEY = {
-    "image_key": "image",
-    "index_key": "index",
-    "label_key": "label",
-}
 TRAINING_DATASET_PATH = os.getenv("IMAGENET_TRAINING_DATASET_PATH", "./data/imagenet/train")
 VALIDATION_DATASET_PATH = os.getenv("IMAGENET_VALIDATION_DATASET_PATH", "./data/imagenet/val") 
 
@@ -41,9 +36,9 @@ class ImageNetDataset(JsaDataset):
         # index: int
         x, label = self.ds[index]
         return {
-            "image": x,
-            "label": label,
-            "index": index,
+            self.IMAGE_KEY: x,
+            self.LABEL_KEY: label,
+            self.INDEX_KEY: index,
         }
 
 class ImageNetDataModule(LightningDataModule):

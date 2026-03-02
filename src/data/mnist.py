@@ -18,7 +18,11 @@ class MNISTDataset(JsaDataset):
         # x: [1, 28, 28], label: int
         # index: int
         x, label = self.ds[index]
-        return x, label, index
+        return {
+            self.IMAGE_KEY: x,
+            self.LABEL_KEY: label,
+            self.INDEX_KEY: index,
+        }
 
 
 
@@ -60,7 +64,9 @@ if __name__ == "__main__":
     data_module.setup()
     train_loader = data_module.train_dataloader()
     for batch in train_loader:
-        x, y, idx = batch
+        x = batch[JsaDataset.IMAGE_KEY]
+        y = batch[JsaDataset.LABEL_KEY]
+        idx = batch[JsaDataset.INDEX_KEY]
         print(x.shape, y.shape, idx.shape)
         break
 

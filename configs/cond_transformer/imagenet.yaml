@@ -1,0 +1,59 @@
+seed_everything: 42
+
+model:
+  class_path: src.models.latent_transformer.LatentTransformer
+  init_args:
+    first_stage_config:
+    # if config_path is present, 
+    # then load the model from the config and ckpt path. 
+    # Otherwise, load the model from the class_path and init_args.
+
+      config_path: ./configs/first_stage_model.yaml
+      ckpt_path: ./egs/first_stage_model/version_0/checkpoints/best-checkpoint.ckpt
+
+      class_path: src.models.vq_gan.VQGAN
+      init_args:
+        # others...
+    cond_stage_config:
+      # mode can be first_stage_model, external_model or no_cond
+      # - first_stage_model, then the cond_stage_model will be the same as the first_stage_model, 
+      #   and no need to specify the class_path, init_args and ckpt_path
+      # - external_model, then need to specify the class_path, init_args and ckpt_path
+      #   or, we can also provide a separate config file for the external model, which contains the class_path and init_args, and then specify the ckpt_path here.
+      # - no_cond, then no need to specify the above parameters, 
+      #   but need to specify the sos_token for the transformer
+      mode: first_stage_model
+
+      config_path: null # ./configs/external_model.yaml
+      ckpt_path: ./egs/some_model/version_0/checkpoints/best-checkpoint.pt
+      
+      class_path: src.models.some_model.SomeModel
+      init_args:
+          # some args for the external model
+      
+      
+      # if mode is no_cond, then need to specify the sos_token
+      # class_path: src.models.sos_provider.SOSProvider
+      # init_args:
+      #     sos_token: 0
+
+      # if mode is first_stage_model, then no need to specify the above parameters
+    
+    transformer:
+      class_path: src.modules.gpts.mingpt.GPT
+      init_args:
+        # some args for the transformer net
+
+    permuter:
+        class_path: src.modules.permuter.SomePermuter
+        init_args:
+          # some args for the permuter
+
+    # The probability of keeping the original token of the input sequence, 
+    # instead of replacing it with the random token, during training.
+    pkeep: 0.9
+    
+    # The key in the dataloader batch for the conditioning stage, 
+    # may be different from the image key used in the first stage model, 
+    # e.g., it can be "label" for class-conditional generation
+    cond_stage_dataset_key: some_dataset_key 

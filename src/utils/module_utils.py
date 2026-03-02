@@ -44,48 +44,95 @@ def dynamic_import(class_path: str):
     Returns:
         type: The imported class.
     """
-    module_path, class_name = class_path.rsplit(".", 1)
-    module = importlib.import_module(module_path)
-    return getattr(module, class_name)
+    try:
+        module_path, class_name = class_path.rsplit(".", 1)
+        module = importlib.import_module(module_path)
+        return getattr(module, class_name)
+    except (ValueError, ImportError, AttributeError) as e:
+        raise ImportError(f"Error importing '{class_path}': {e}")
 
 
-def load_model_from_checkpoint(config_path: str, checkpoint_path: str):
-    """Load a model from a checkpoint using a configuration file.
-    
+def instantiate_from_config(config: dict):
+    """
+    Instantiate an object from a configuration dictionary.
+
+    Args:
+        config (dict): A dictionary containing 'class_path' and 'init_args'.
+
+    Returns:
+        object: An instance of the specified class initialized with the given arguments.
+    """
+    class_path = config.get("class_path")
+    init_args = config.get("init_args", {})
+
+    if not class_path:
+        raise ValueError("Configuration must include 'class_path'.")
+
+    try:
+        ClassType = dynamic_import(class_path)
+    except Exception as e:
+        raise RuntimeError(f"Error initializing from config: {e}")
+
+    # Using jsonargparse to handle nested configurations and instantiation
+    parser = ArgumentParser()
+    parser.add_class_arguments(ClassType, "model", fail_untyped=False)
+
+    try:
+        cfg = parser.parse_object({"model": init_args})
+        instance = parser.instantiate_classes(cfg).model
+    except Exception as e:
+        raise RuntimeError(
+            f"Error instantiating class '{class_path}' with arguments {init_args}: {e}"
+        )
+        
+    return instance
+
+def load_from_config(config: dict, ckpt_path: str=None, freeze: bool = True):
+    """
+    Initialize an object from a configuration dictionary and load its state from a checkpoint.
+
+    Args:
+        config (dict): A dictionary containing 'class_path' and 'init_args'.
+        ckpt_path (str): Path to the model checkpoint file.   
+        freeze (bool): Whether to set the model to eval mode and freeze its parameters after loading.
+    Returns:
+        object: An instance of the specified class initialized with the given arguments and loaded with the checkpoint state.
+        
+    """
+    model = instantiate_from_config(config)
+    if ckpt_path:
+        try:
+            checkpoint = torch.load(ckpt_path, map_location="cpu")
+            
+            state_dict = checkpoint.get("state_dict", checkpoint)  # Handle both cases where state_dict is nested or not
+            model.load_state_dict(state_dict,strict=False)  # Use strict=False to allow for missing keys if the checkpoint has extra keys
+        except Exception as e:
+            raise RuntimeError(f"Error loading checkpoint from '{ckpt_path}': {e}")
+        
+    if freeze:
+        model.eval()
+        for param in model.parameters():
+            param.requires_grad = False
+            
+        # Monkey patch the train method to prevent accidental unfreezing
+        model.train = lambda mode=True: model
+    return model
+        
+        
+def load_from_file(config_path: str, ckpt_path: str, freeze: bool = True):
+    """
+    Initialize an object from a configuration file and load its state from a checkpoint.
+
     Args:
         config_path (str): Path to the YAML configuration file.
-        checkpoint_path (str): Path to the model checkpoint file.
+        ckpt_path (str): Path to the model checkpoint file.   
+        freeze (bool): Whether to set the model to eval mode and freeze its parameters after loading.
     Returns:
-        nn.Module: The loaded model.
+        object: An instance of the specified class initialized with the given arguments and loaded with the checkpoint state.
     """
     with open(config_path, "r") as f:
         config = yaml.safe_load(f)
+        
+    model_config = config.get("model", config)  # Handle both cases where model config is nested or not
+    return load_from_config(model_config, ckpt_path, freeze)
 
-    model_config = config.get("model", {})
-    model_class_path = model_config.get("class_path", {})
-    model_init_args = model_config.get("init_args", {})
-
-    try:
-        ModelClass = dynamic_import(model_class_path)
-        print(f"Dynamically imported model class: {ModelClass}")
-    except Exception as e:
-        print(f"Error importing model class from path '{model_class_path}': {e}")
-        raise
-
-    parser = ArgumentParser()
-    parser.add_class_arguments(
-        ModelClass, "model", fail_untyped=False
-    )  # Important: setting fail_untyped=False to allow instantiation without type annotations
-
-    cfg = parser.parse_object({"model": model_init_args})
-    model = parser.instantiate_classes(cfg).model
-
-    # Load the model parameters into the model
-    checkpoint = torch.load(checkpoint_path)
-    model.load_state_dict(checkpoint["state_dict"])
-
-    model.eval()
-    model.freeze()
-    print(f"Model parameters loaded and model set to eval mode.")
-
-    return model

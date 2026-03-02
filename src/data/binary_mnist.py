@@ -18,7 +18,11 @@ class BinaryMNISTDataset(JsaDataset):
 
     def __getitem__(self, index):
         x, label = self.ds[index]
-        return x, label, index
+        return {
+            self.IMAGE_KEY: x,
+            self.LABEL_KEY: label,
+            self.INDEX_KEY: index,
+        }
     
 class BinaryMNISTDataModule(LightningDataModule):
     def __init__(self, root="./data", batch_size=64, num_workers=4):

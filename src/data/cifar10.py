@@ -4,11 +4,6 @@ from torch.utils.data import DataLoader, random_split
 from torchvision import datasets, transforms
 from src.base.base_dataset import JsaDataset
 
-DATASET_KEY = {
-    "image_key": "image",
-    "index_key": "index",
-    "label_key": "label",
-}
 
 class CIFAR10Dataset(JsaDataset):
     def __init__(self, root: str, train=True):
@@ -34,9 +29,9 @@ class CIFAR10Dataset(JsaDataset):
         # index: int
         x, label = self.ds[index]
         return {
-            "image": x,
-            "label": label,
-            "index": index,
+            JsaDataset.IMAGE_KEY: x,
+            JsaDataset.LABEL_KEY: label,
+            JsaDataset.INDEX_KEY: index,
         }
 
 
