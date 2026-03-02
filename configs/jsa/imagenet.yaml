@@ -7,7 +7,7 @@ model:
       class_path: src.modules.jsa.joint_model.JointModelCategoricalGaussian
       init_args:
         sample_chunk_size: 1
-        sigma: 1.0
+        sigma: 0.5
         net:
           class_path: src.modules.jsa.jsa_adaptor.ConvDecoder
           init_args:

@@ -265,7 +265,7 @@ def plot_codebook_usage_distribution(
     # Generate tag for the figure
     scale_tag = "log" if use_log_scale else "linear"
     tag = (
-        f"{tag_prefix}_codebook_usage_distribution_{scale_tag}"
+        f"{tag_prefix}/codebook_usage_distribution_{scale_tag}"
         if tag_prefix
         else f"codebook_usage_distribution_{scale_tag}"
     )

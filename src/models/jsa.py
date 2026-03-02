@@ -4,6 +4,7 @@ from lightning.pytorch import LightningModule
 from hydra.utils import instantiate
 import torchvision
 import torch.distributed as dist
+from typing import Any
 
 from src.samplers.misampler import MISampler
 from src.base.base_jsa_modules import BaseJointModel, BaseProposalModel
@@ -24,7 +25,7 @@ class JSA(LightningModule):
         self,
         joint_model: BaseJointModel,
         proposal_model: BaseProposalModel,
-        sampler,
+        sampler: Any,
         gan_loss: JSAGANLoss = None,
         base_lr_joint=1e-3,
         base_lr_proposal=1e-3,
@@ -37,6 +38,7 @@ class JSA(LightningModule):
         sigma_controller=None,
         global_only_steps: int = 10000,
         block_strategy_prob: float = 0.5,
+        dataset_key=None,
     ):
         super().__init__()
         # self.save_hyperparameters(ignore=["joint_model", "proposal_model", "sampler", "gan_loss"])
@@ -67,7 +69,7 @@ class JSA(LightningModule):
         self.init_strict = init_strict
         self._weights_loaded = False  # guard to ensure weights are loaded only once
 
-        self.dataset_key = DATASET_KEY
+        self.dataset_key = DATASET_KEY if dataset_key is None else dataset_key
         self.sigma_controller: SigmaController | None = (
             instantiate(sigma_controller) if sigma_controller is not None else None
         )
@@ -242,7 +244,7 @@ class JSA(LightningModule):
             x,
             idx=idx,
             num_steps=self.num_mis_steps,
-            parallel=True,
+            parallel=False,
             return_all=False,
             strategy=self._choose_sampling_strategy(),
         )  # [B, num_samples, ..., num_latent_vars]

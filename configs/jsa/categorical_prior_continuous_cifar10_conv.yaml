@@ -48,7 +48,7 @@ model:
             resolution: 32
             z_channels: 256 # should calculated based on num_categories and num_latent_vars
     sampler:
-      _target_: src.samplers.misampler.MISampler
+      # _target_: src.samplers.misampler.MISampler
       use_cache: false # initial value, will be updated during training
       dataset_size: 50000
       element_shape: [8, 8] # height and width of latent variable

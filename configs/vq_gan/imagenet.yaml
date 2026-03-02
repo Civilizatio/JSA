@@ -1,0 +1,124 @@
+seed_everything: 42
+
+model:
+  class_path: src.models.vq_gan.VQModel
+  init_args:
+    encoder:
+      class_path: src.modules.vqvae.vq_adaptor.ConvEncoder
+      init_args:
+        ch: 128
+        ch_mult: [1,1,2,2,4]
+        num_res_blocks: 2
+        z_channels: 256
+        double_z: false
+        in_channels: 3
+        resolution: 256
+        activation: swish
+        norm_type: group
+        attn_resolutions: [16]
+        dropout: 0.0
+        resamp_with_conv: true
+    decoder:
+      class_path: src.modules.vqvae.vq_adaptor.ConvDecoder
+      init_args:
+        ch: 128
+        ch_mult: [1,1,2,2,4]
+        num_res_blocks: 2
+        z_channels: 256
+        out_ch: 3
+        resolution: 256
+        activation: swish
+        norm_type: group
+        attn_resolutions: [16]
+        dropout: 0.0
+        resamp_with_conv: true
+        final_activation: null
+
+    quantizer:
+      class_path: src.modules.vqvae.quantize.VectorQuantizer2
+      init_args:
+        n_e: 1024
+        e_dim: 256
+        beta: 0.25
+        remap: null
+        sane_index_shape: false
+        in_channels: 256
+        freeze_codebook: false
+
+    loss:
+      class_path: src.modules.losses.vqperceptual.VQLPIPSWithDiscriminator
+      init_args:
+        disc_conditional: False
+        disc_in_channels: 3
+        disc_num_layers: 2
+        disc_ndf: 32
+        disc_start: 500000 # larger than max_steps, to disable for discriminator training
+        disc_weight: 0.8
+        codebook_weight: 1.0
+        perceptual_weight: 0.0
+        pixel_loss: "l2"
+
+    image_key: "image"
+    base_learning_rate: 4.5e-06
+    ckpt_path: null
+
+data:
+  class_path: src.data.imagenet.ImageNetDataModule
+  init_args:
+    batch_size: 6
+    num_workers: 24
+    image_size: 256
+    random_crop: True
+trainer:
+  logger:
+    class_path: lightning.pytorch.loggers.TensorBoardLogger
+    init_args:
+      save_dir: ./egs/imagenet/vqgan
+      name: vq_gan_imagenet
+
+  callbacks:
+    - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+      init_args:
+        every_n_train_steps: 5000
+        mode: min
+        save_top_k: 3
+        filename: "{step:06d}-{epoch:06d}"
+        save_last: true
+        monitor: valid/rec_loss
+
+    - class_path: lightning.pytorch.callbacks.LearningRateMonitor
+      init_args:
+        logging_interval: "step"
+
+    - class_path: src.utils.callbacks.image_logger_callback.ImageLogger
+      init_args:
+        batch_frequency: 1000
+        max_images: 24
+        clamp: true
+
+    - class_path: src.utils.callbacks.grad_norm_callback.GradientNorm
+      init_args:
+        norm_type: 2
+        log_every_n_steps: 1
+
+    - class_path: src.utils.callbacks.save_model_summary_callback.LogModelSummary
+      init_args:
+        max_depth: 4
+
+    - class_path: src.utils.callbacks.codebook_stats_callback.CodebookStats
+      init_args:
+        stage: "valid"
+        log_prefix: "valid"
+        plot: true
+        sort_by_counter: true
+        use_log_scale: false
+  accelerator: gpu
+  devices: [2, 3, 4, 5]
+  strategy: ddp_find_unused_parameters_true
+  max_epochs: 50000
+  max_steps: 5000000 # higher priority than max_epochs
+  precision: 32
+  enable_progress_bar: true
+  log_every_n_steps: 25
+  val_check_interval: 5000
+  limit_val_batches: 200
