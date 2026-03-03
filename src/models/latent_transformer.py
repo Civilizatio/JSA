@@ -46,9 +46,11 @@ class LatentTransformer(LightningModule):
         self.pkeep = pkeep
         self.cond_stage_dataset_key = cond_stage_dataset_key
         self.learning_rate = base_learning_rate
-        
-        self.train_logger = None  # will be initialized in on_fit_start() when trainer is available
-        
+
+        self.train_logger = (
+            None  # will be initialized in on_fit_start() when trainer is available
+        )
+
         # For gradient logging callback
         self.grad_norm_modules = {
             "transformer": self.transformer,
@@ -115,24 +117,31 @@ class LatentTransformer(LightningModule):
 
     ################################## Training methods ##########################################################
     def on_fit_start(self):
-        
+
         log_dir = self.trainer.log_dir if self.trainer else "logs"
         self.train_logger = get_file_logger(
-            log_path=f"{log_dir}/training.log", 
+            log_path=f"{log_dir}/training.log",
             name="train_logger",
-            rank=self.trainer.global_rank if self.trainer else 0
+            rank=self.trainer.global_rank if self.trainer else 0,
         )
-        
+
     def on_train_start(self):
-        
+
         if self.train_logger is not None:
             self.train_logger.info("Starting training...")
-            self.train_logger.info(f"Transformer Model Config: {self.transformer.config}")
-            self.train_logger.info(f"First Stage Model: {type(self.first_stage_model).__name__}")
-            self.train_logger.info(f"Conditional Stage Model: {type(self.cond_stage_model).__name__}")
-            self.train_logger.info(f"Permutation Strategy: {type(self.permuter).__name__}")
+            self.train_logger.info(
+                f"Transformer Model Config: {self.transformer.config}"
+            )
+            self.train_logger.info(
+                f"First Stage Model: {type(self.first_stage_model).__name__}"
+            )
+            self.train_logger.info(
+                f"Conditional Stage Model: {type(self.cond_stage_model).__name__}"
+            )
+            self.train_logger.info(
+                f"Permutation Strategy: {type(self.permuter).__name__}"
+            )
             self.train_logger.info(f"Transformer Model Structure: {self.transformer}")
-            
 
     def forward(self, x, cond):
 
@@ -202,7 +211,7 @@ class LatentTransformer(LightningModule):
         # Implement the training logic here
         loss = self._shared_step(batch, batch_idx)
         self.log(
-            "train/loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True
+            "train/loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True, sync_dist=True
         )
         return loss
 
@@ -255,10 +264,21 @@ class LatentTransformer(LightningModule):
         ):
             # If the first stage model has a decode method, we can use it to reconstruct images from latent tokens.
             # We may need to reverse the permutation before decoding.
-            permuted_tokens = self.permuter.reverse(
-                latent_tokens
+            permuted_tokens = self.permuter(
+                latent_tokens, reverse=True
             )  # [B, T_latent] -> [B, T_latent]
 
+            #! Important note:
+            # When in the early stage durning unconditional training, the generated latent tokens may not be meaningful, so it will predict `sos_token`, which does not appears in the first stage model's codebook, and thus cannot be decoded by the first stage model, which may cause errors or produce garbage reconstructions.
+            # To handle this, we replace these out-of-vocabulary tokens with a valid token (e.g., the token for all-zero image) before decoding.
+            # There is no need to worry about this correction, because in the late phase of training, the model will learn to generate valid tokens.
+            sos_token = self.cond_stage_model.sos_token if hasattr(self.cond_stage_model, "sos_token") else None
+            if sos_token is not None:
+                valid_token = 0  # Assuming token 0 corresponds to a valid image (e.g., all-zero image) in the first stage model's codebook
+                permuted_tokens = torch.where(
+                    permuted_tokens == sos_token, valid_token, permuted_tokens
+                )
+            
             # [B, T_latent -> [B, C, H, W]
             # only for square T_latent, we can infer H and W as sqrt(T_latent)
             # otherwise, we need to provide `shape`, like:
@@ -276,7 +296,7 @@ class LatentTransformer(LightningModule):
         # Implement the validation logic here
         loss = self._shared_step(batch, batch_idx)
         self.log(
-            "valid/loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True
+            "valid/loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True, sync_dist=True
         )
         return loss
 
@@ -456,15 +476,15 @@ class LatentTransformer(LightningModule):
         effective_batch_size = batch_size * num_devices * accumulate_grad_batches
         self.learning_rate = (
             self.learning_rate * effective_batch_size
-        )  # scale learning rate based
+        )  # scale learning rate based on effective batch size
 
         if self.train_logger is not None:
             self.train_logger.info(
-                f"Configuring optimizers with effective batch size {effective_batch_size}, lr_joint {self.lr_joint}, lr_proposal {self.lr_proposal}, lr_discriminator {self.lr_discriminator}"
+                f"Configuring optimizers with effective batch size {effective_batch_size}, learning_rate {self.learning_rate}"
             )
         else:
             print(
-                f"Configuring optimizers with effective batch size {effective_batch_size}, lr_joint {self.lr_joint}, lr_proposal {self.lr_proposal}, lr_discriminator {self.lr_discriminator}"
+                f"Configuring optimizers with effective batch size {effective_batch_size}, learning_rate {self.learning_rate}"
             )
 
         # Using AdamW optimizer for the transformer parameters

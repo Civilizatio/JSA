@@ -1,3 +1,5 @@
+# An example config file for the latent transformer model.
+# You can modify the parameters according to your needs.
 seed_everything: 42
 
 model:

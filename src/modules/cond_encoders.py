@@ -30,15 +30,13 @@ class Labelator(AbstractCondEncoder):
 
 class SOSProvider(AbstractCondEncoder):
     # for unconditional training
-    def __init__(self, sos_token, quantize_interface=True):
+    def __init__(self, sos_token):
         super().__init__()
         self.sos_token = sos_token
-        self.quantize_interface = quantize_interface
-
+        
     def encode(self, x):
         # get batch size from data and replicate sos_token
-        c = torch.ones(x.shape[0], 1) * self.sos_token
+        c = torch.ones(x.shape[0], 1) * self.sos_token # shape (batch_size, 1)
         c = c.long().to(x.device)
-        if self.quantize_interface:
-            return c, None, [None, None, c]
+        
         return c
