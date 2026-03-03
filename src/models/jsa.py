@@ -149,7 +149,7 @@ class JSA(LightningModule):
         return x_hat
 
     def encode(self, x):
-        h = self.proposal_model.encode(x)
+        h = self.proposal_model.encode(x)  # [B, ..., num_latent_vars]
         return h
 
     def decode(self, h):
@@ -388,6 +388,10 @@ class JSA(LightningModule):
     # ========================= Callback Utilities =========================
 
     def log_images(self, batch, **kwargs):
+        """Log input and reconstructed images for visualization in TensorBoard.
+
+        Interface for `src.utils.callbacks.image_logger_callback.ImageLogger`
+        """
         log = dict()
         x = self.get_input(batch, JsaDataset.IMAGE_KEY)
         x_rec = self.forward(x)
@@ -396,6 +400,10 @@ class JSA(LightningModule):
         return log
 
     def get_codebook_indices(self, batch):
+        """Utility function to get codebook indices from the proposal model for a given batch of images.
+
+        Interface for `src.utils.callbacks.codebook_stats_callback.CodebookStats`
+        """
         x = self.get_input(batch, JsaDataset.IMAGE_KEY)
         h = self.proposal_model.encode(
             x, sane_index_shape=False
@@ -406,4 +414,75 @@ class JSA(LightningModule):
         return indices
 
     def get_codebook_size(self):
+        """Utility function to get the total codebook size (number of discrete codes) from the proposal model.
+
+        Interface for `src.utils.callbacks.codebook_stats_callback.CodebookStats`
+        """
         return math.prod(self.proposal_model.num_categories)
+
+    # ========================= Downstream tasks =========================
+
+    @torch.no_grad()
+    def tokenize(self, x, flatten=True):
+        """Utility function to get discrete token indices from the proposal model for a given batch of images.
+
+        Interface for potential downstream tasks that require discrete tokenization.
+        Args:
+            x: input images [B, C, H, W]
+            flatten: whether to flatten spatial dimensions and return shape [B, H*W] or keep spatial dimensions and return shape [B, H, W]
+        Returns:  
+            If flatten=True: [B, H*W] where each element is the discrete token index for that spatial location.
+            If flatten=False: [B, H, W] where each element is the discrete token index for that spatial location.       
+         
+        """
+        assert (
+            self.proposal_model.num_latent_vars == 1
+        ), "Tokenization currently only supported for single latent variable per spatial location."
+
+        indices = self.proposal_model.encode(x)  # [B, H, W, 1]
+        if flatten: # return shape [B, H*W]
+            indices = indices.squeeze(-1)  # [B, H, W]
+            indices = indices.view(indices.shape[0], -1)  # [B, H*W]
+            
+        else: # return shape [B, H, W]
+            indices = indices.squeeze(-1)
+        return indices.long() # ensure long dtype for discrete token indices
+    
+    @torch.no_grad()
+    def detokenize(self, indices, shape=None):
+        """Utility function to decode discrete token indices back to continuous latent representations.
+
+        Interface for potential downstream tasks that require decoding from discrete tokens.
+        Args:
+            indices: [B, H, W] or [B*H*W*num_latent_vars] depending on flatten
+            shape: tuple specifying the desired output shape (e.g., (H, W)) if indices is flattened. 
+                    If None, assumes indices is already in the correct shape.
+         
+        """
+        assert (
+            self.proposal_model.num_latent_vars == 1
+        ), "Detokenization currently only supported for single latent variable per spatial location."
+        
+        indices = indices.long() # ensure long dtype for embedding lookup
+        
+        if indices.dim() == 3: # [B, H, W]
+            indices = indices.unsqueeze(-1)  # [B, H, W, 1]
+            return self.decode(indices)  # [B, C, H, W]
+        
+        elif indices.dim() == 2: # [B, H*W]
+            B, HW = indices.shape
+            if shape is not None:
+                H, W = shape[0], shape[1]
+                if HW != H * W:
+                    raise ValueError(f"Provided shape {shape} does not match the number of tokens in indices {indices.shape}")
+            else:
+                H = W = int(HW**0.5)  # assume square spatial dimensions if shape not provided
+                if H * W != HW:
+                    raise ValueError(f"Cannot infer square spatial dimensions from indices shape {indices.shape}. Please provide explicit shape.")
+            indices = indices.view(B, H, W)  # [B, H, W] 
+            indices = indices.unsqueeze(-1)  # [B, H, W, 1]
+            x = self.decode(indices)  # [B, C, H, W]
+            return x
+        else:
+            raise ValueError(f"Unsupported indices shape {indices.shape} for detokenization. Expected [B, H, W] or [B, H*W].")
+        

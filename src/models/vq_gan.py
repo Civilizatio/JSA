@@ -89,12 +89,24 @@ class VQModel(LightningModule):
         dec = self.decoder(quant)
         return dec
 
-    def decode_code(self, code_b):
-        shape = None
+    def decode_code(self, code_b, shape=None):
+            
         if len(code_b.shape) == 3:
             b, h, w = code_b.shape
-            shape = (b, h, w, self.quantizer.e_dim)
-
+        elif len(code_b.shape) == 2:
+            b, hw = code_b.shape
+            if shape is not None:
+                h, w = shape[0], shape[1]
+                if hw != h * w:
+                    raise ValueError(f"Provided shape {shape} does not match code_b shape {code_b.shape}")
+                shape = (b, h, w, self.quantizer.e_dim)
+            else:
+                h = w = int(hw ** 0.5)
+                if h * w != hw:
+                    raise ValueError(f"Cannot infer square shape from code_b shape {code_b.shape}, please provide shape argument.")
+        else:
+            raise ValueError(f"code_b must be of shape [B, H, W] or [B, H*W], but got {code_b.shape}")
+        shape = (b, h, w, self.quantizer.e_dim)
         quant_b = self.quantizer.get_codebook_entry(code_b, shape=shape)
         dec = self.decode(quant_b)
         return dec
@@ -252,10 +264,27 @@ class VQModel(LightningModule):
         )
         return [opt_ae, opt_disc], []
 
+    # ============================== Utility methods ==============================
     def get_last_layer(self):
         return self.decoder.get_last_layer_weight()
+    
+    def to_rgb(self, x):
+        """ For segmentation maps with discrete labels, 
+        we can colorize them using a random projection to 3 channels for visualization. 
+        """
+        assert self.dataset_key["image_key"] == "segmentation"
+        if not hasattr(self, "colorize"):
+            self.register_buffer("colorize", torch.randn(3, x.shape[1], 1, 1).to(x))
+        x = F.conv2d(x, weight=self.colorize)
+        x = 2.0 * (x - x.min()) / (x.max() - x.min()) - 1.0
+        return x
 
+    # ============================== Callback interfaces ==============================
     def log_images(self, batch, **kwargs):
+        """Log input and reconstructed images for visualization in TensorBoard.
+
+        Interface for `src.utils.callbacks.image_logger_callback.ImageLogger`
+        """
         log = dict()
         x = self.get_input(batch, self.dataset_key["image_key"])
         x = x.to(self.device)
@@ -270,21 +299,43 @@ class VQModel(LightningModule):
         return log
 
     def get_codebook_indices(self, batch):
+        """Utility function to get codebook indices from the proposal model for a given batch of images.
+
+        Interface for `src.utils.callbacks.codebook_stats_callback.CodebookStats`
+        """
         x = self.get_input(batch, self.dataset_key["image_key"])
         _, _, info = self.encode(x)
         return info[2]  # indices
 
     def get_codebook_size(self):
+        """Utility function to get the total codebook size (number of discrete codes) from the proposal model.
+
+        Interface for `src.utils.callbacks.codebook_stats_callback.CodebookStats`
+        """
         return self.quantizer.n_e
 
-    def to_rgb(self, x):
-        assert self.dataset_key["image_key"] == "segmentation"
-        if not hasattr(self, "colorize"):
-            self.register_buffer("colorize", torch.randn(3, x.shape[1], 1, 1).to(x))
-        x = F.conv2d(x, weight=self.colorize)
-        x = 2.0 * (x - x.min()) / (x.max() - x.min()) - 1.0
-        return x
+    # ============================== Downstream tasks ==============================
+    
+    @torch.no_grad()
+    def tokenize(self, x, flatten=True):
+        """Utility function to tokenize input images into discrete code indices.
 
+        Interface for downstream tasks like `src.models.latent_transformer.LatentTransformer`
+        """
+        _, _, info = self.encode(x)
+        if flatten:
+            # If flatten is True, we return a 2D tensor of shape [B, T] where T = H'*W'
+            indices = info[2].view(info[2].shape[0], -1)
+            return indices
+        return info[2].long()  # indices, shape [B, H', W']
+
+    @torch.no_grad()
+    def detokenize(self, indices, shape=None):
+        """Utility function to decode discrete code indices back into images.
+
+        Interface for downstream tasks like `src.models.latent_transformer.LatentTransformer`
+        """
+        return self.decode_code(indices, shape=shape)
 
 class VQNoDiscModel(VQModel):
     def __init__(

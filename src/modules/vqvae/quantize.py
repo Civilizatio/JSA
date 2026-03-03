@@ -395,7 +395,7 @@ class VectorQuantizer2(nn.Module):
             indices = indices.reshape(-1)  # flatten again
 
         # get quantized latent vectors
-        z_q = self.embedding(indices)
+        z_q = self.embedding(indices.long())
 
         if shape is not None:
             z_q = z_q.view(shape)

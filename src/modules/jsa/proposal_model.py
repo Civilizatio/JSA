@@ -207,7 +207,7 @@ class ProposalModelCategorical(BaseProposalModel):
             return h_samples.float(), split_logits  # dtype=torch.float
         return h_samples.float()  # dtype=torch.float
 
-    def encode(self, x, sane_index_shape=True):
+    def encode(self, x, flatten=False):
         """Deterministic encoding (argmax)"""
         split_logits = self.forward(x)
 
@@ -218,7 +218,7 @@ class ProposalModelCategorical(BaseProposalModel):
             idx_list.append(idx)
 
         h_idx = torch.cat(idx_list, dim=-1)  # [B, H', W', num_latent_vars]
-        if not sane_index_shape:
+        if flatten:
             # return shape [B*H'*W'*num_latent_vars, 1]
             h_idx = h_idx.view(-1, 1)
             

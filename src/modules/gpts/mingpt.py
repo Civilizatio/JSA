@@ -219,8 +219,7 @@ class GPT(nn.Module):
     def forward_with_past(
         self, idx, embeddings=None, targets=None, past=None, past_length=None
     ):
-        ''' Forward using KV cache. Only for inference at the moment. 
-        '''
+        """Forward using KV cache. Only for inference at the moment."""
         # inference only
         assert not self.training
         token_embeddings = self.tok_emb(idx)  # each index maps to a (learnable) vector
@@ -269,6 +268,98 @@ class GPT(nn.Module):
             torch.stack(presents),
         )  # _, _, n_layer, 2, b, nh, 1, dim_head
 
+    @torch.no_grad()
+    def sample(
+        self,
+        idx,
+        steps,
+        temperature=1.0,
+        top_k=None,
+        top_p=None,
+        callback=lambda k: None,
+    ):
+        """Take a conditioning sequence of indices in idx (of shape (b,t)) and predict the next token in
+        the sequence, feeding the predictions back into the model each time. Clearly the sampling
+        has quadratic complexity unlike an RNN that is only linear, and has a finite context window
+        of block_size, unlike an RNN that has an infinite context window.
+        """
+        block_size = self.get_block_size()
+        self.eval()
+        for k in range(steps):
+            callback(k)
+
+            # Limit the context to block_size tokens, as the model cannot attend to more than that
+            idx_cond = idx if idx.size(1) <= block_size else idx[:, -block_size:]
+            logits, _ = self.forward(idx_cond)
+            logits = logits[
+                :, -1, :
+            ]  # pluck the logits at the final step for the next token prediction
+
+            if temperature > 0:
+                logits = logits / temperature
+                if top_k is not None or top_p is not None:
+                    logits = top_k_top_p_filtering(logits, top_k=top_k, top_p=top_p)
+                probs = F.softmax(logits, dim=-1)
+                ix = torch.multinomial(probs, num_samples=1)
+            else:
+                _, ix = torch.topk(logits, k=1, dim=-1)
+
+            # append to the sequence and continue
+            idx = torch.cat((idx, ix), dim=1)
+
+        return idx
+
+    @torch.no_grad()
+    def sample_with_past(
+        self,
+        idx,
+        steps,
+        temperature=1.0,
+        top_k=None,
+        top_p=None,
+        callback=lambda k: None,
+    ):
+        # idx is the conditioning sequence of indices, of shape (b, t)
+        # current_input is the input for the current step, initialized as idx and updated to the newly sampled token at each step
+        sample = idx
+        current_input = idx
+        cond_len = idx.shape[1]
+
+        # past is a list of length n_layer, each element is a tuple of (key, value) with shape (b, nh, T_past, hs)
+        # List[Tensor[layer, 2, b, nh, T_past, hs]]
+        past = None
+        for n in range(steps):
+            callback(n)
+            logits, _, present = self.forward_with_past(
+                current_input,
+                past=past,
+                past_length=sample.shape[1] - current_input.shape[1],
+            )
+
+            # Update KV cache
+            if past is None:
+                past = [present]
+            else:
+                past.append(present)
+
+            logits = logits[:, -1, :]
+
+            if temperature > 0:
+                logits = logits / temperature
+                if top_k is not None or top_p is not None:
+                    logits = top_k_top_p_filtering(logits, top_k=top_k, top_p=top_p)
+                probs = F.softmax(logits, dim=-1)
+                idx_next = torch.multinomial(probs, num_samples=1)
+            else:
+                _, idx_next = torch.topk(logits, k=1, dim=-1)
+
+            sample = torch.cat((sample, idx_next), dim=1)
+            current_input = idx_next  # for the next step's input
+
+        del past  # free memory
+        sample = sample[:, cond_len:]  # cut conditioning off
+        return sample
+
 
 class DummyGPT(nn.Module):
     # for debugging
@@ -281,6 +372,37 @@ class DummyGPT(nn.Module):
 
 
 #### sampling utils
+# New version: using `LogitsWarper` from transformers
+from transformers import (
+    TopKLogitsWarper,
+    TopPLogitsWarper,
+)
+
+
+def top_k_top_p_filtering(
+    logits,
+    top_k=0,
+    top_p=1.0,
+):
+    warpers = []
+    if top_k > 0:
+        warpers.append(TopKLogitsWarper(top_k=top_k))
+    if top_p < 1.0:
+        warpers.append(TopPLogitsWarper(top_p=top_p))
+
+    for warper in warpers:
+        logits = warper(None, logits)
+
+    return logits
+
+
+""" Functions below can be deleted.
+
+- top_k_logits: old version of top_k_top_p_filtering, only supports top_k.
+- sample/sample_with_past: they are moved to the `GPT` class as methods.
+- _top_k_top_p_filtering: old version of top_k_top_p_filtering, have been replaced by the new version using `LogitsWarper` from transformers.
+"""
+
 
 def top_k_logits(logits, k):
     v, ix = torch.topk(logits, k)
@@ -326,30 +448,6 @@ def _top_k_top_p_filtering(
             1, sorted_indices, sorted_indices_to_remove
         )
         logits[indices_to_remove] = filter_value
-    return logits
-
-
-# New version: using `LogitsWarper` from transformers
-from transformers import (
-    TopKLogitsWarper,
-    TopPLogitsWarper,
-)
-
-
-def top_k_top_p_filtering(
-    logits,
-    top_k=0,
-    top_p=1.0,
-):
-    warpers = []
-    if top_k > 0:
-        warpers.append(TopKLogitsWarper(top_k=top_k))
-    if top_p < 1.0:
-        warpers.append(TopPLogitsWarper(top_p=top_p))
-
-    for warper in warpers:
-        logits = warper(None, logits)
-
     return logits
 
 
@@ -425,8 +523,3 @@ def sample_with_past(
     del past
     sample = sample[:, cond_len:]  # cut conditioning off
     return sample
-
-
-
-
-
