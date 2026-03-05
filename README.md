@@ -64,11 +64,11 @@ tensorboard --logdir=egs/continuous_mnist/categorical_prior/version_11 --port=60
 
 ``` bash
 
-tensorboard --logdir=egs/imagenet --port 6023
+tensorboard --logdir=egs/cifar10/cond_transformer/lightning_logs/2026-03-05_09-58-04 --port 6023
 ```
 
 ``` bash
-tensorboard --logdir=egs/cifar10 --port=6024
+tensorboard --logdir=egs/cifar10/cond_transformer/lightning_logs/2026-03-05_09-34-51 --port=6024
 ```
 tensorboard --logdir=egs/continuous_mnist/categorical_prior_conv/base_version --port=6010
 

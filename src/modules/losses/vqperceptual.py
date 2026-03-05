@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from src.modules.losses.lpips import LPIPS_CIFAR10
+from src.modules.losses.lpips import LPIPS_CIFAR10, LPIPS
 from src.modules.discriminator import NLayerDiscriminator
 
 
@@ -61,7 +61,7 @@ class VQLPIPSWithDiscriminator(nn.Module):
         assert pixel_loss in ["l1", "l2"]
         self.codebook_weight = codebook_weight
         self.pixel_weight = pixelloss_weight
-        self.perceptual_loss = LPIPS_CIFAR10().eval()
+        self.perceptual_loss = LPIPS.eval()
         self.perceptual_weight = perceptual_weight
         self.pixel_loss = pixel_loss
 

@@ -3,8 +3,10 @@ import torch
 from src.models.jsa import JSA
 from src.models.vq_gan import VQModel
 from torch.utils.data import DataLoader, Subset
+from src.base.base_dataset import JsaDataset
 from src.data.mnist import MNISTDataset
 from src.data.cifar10 import CIFAR10Dataset
+from src.data.imagenet import ImageNetDataModule
 import math
 import numpy as np
 import os
@@ -29,6 +31,7 @@ from src.utils.distribution_analysis import (
     umap_embedding,
     plot_embedding,
 )
+from src.utils.module_utils import load_from_file
 
 
 from tqdm import tqdm
@@ -614,7 +617,7 @@ def inference_step(batch, model, device):
     # Get codebook indices
 
     indices = model.get_codebook_indices(batch)
-    x = model.get_input(batch, model.dataset_key["image_key"])
+    x = model.get_input(batch, JsaDataset.IMAGE_KEY)  # Assuming image key is consistent
     if isinstance(batch, dict) and "label" in batch:
         y = batch["label"]
     elif isinstance(batch, (list, tuple)) and len(batch) > 1:
@@ -769,44 +772,52 @@ def main(exp_dir, config_path, checkpoint_path, run_config=None):
     logger.info(f"Loading model from {checkpoint_path}...")
 
     # Load model
-    device = "cuda:0" if torch.cuda.is_available() else "cpu"
-    cli = InferenceCLI(
-        run=False,
-        args=[
-            "--config",
-            config_path,
-        ],
-    )
+    device = "cuda:7" if torch.cuda.is_available() else "cpu"
+    # cli = InferenceCLI(
+    #     run=False,
+    #     args=[
+    #         "--config",
+    #         config_path,
+    #     ],
+    # )
 
-    model = cli.model
-    ckpt = torch.load(checkpoint_path, map_location=device)
-    model.load_state_dict(ckpt["state_dict"])
+    # model = cli.model
+    # ckpt = torch.load(checkpoint_path, map_location=device)
+    # model.load_state_dict(ckpt["state_dict"])
+    model = load_from_file(config_path=config_path, ckpt_path=checkpoint_path, freeze=True)
     model = model.to(device)
     model.eval()
 
     # Prepare test data
-    test_dataset = CIFAR10Dataset(root="./data/cifar10", train=False)
-    test_loader = DataLoader(test_dataset, batch_size=50, shuffle=False)
+    # test_dataset = CIFAR10Dataset(root="./data/cifar10", train=False)
+    # test_loader = DataLoader(test_dataset, batch_size=50, shuffle=False)
 
-    CIFAR10_CLASSES = [
-        "airplane",
-        "automobile",
-        "bird",
-        "cat",
-        "deer",
-        "dog",
-        "frog",
-        "horse",
-        "ship",
-        "truck",
-    ]
-    target_class_names = run_config.get("target_class_names", None)
-    if target_class_names is not None:
-        logger.info(f"Filtering test dataset for classes: {target_class_names}...")
-        test_dataset = filter_dataset_by_class(
-            test_dataset, target_class_names, CIFAR10_CLASSES, logger=logger
-        )
-        test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
+    # CIFAR10_CLASSES = [
+    #     "airplane",
+    #     "automobile",
+    #     "bird",
+    #     "cat",
+    #     "deer",
+    #     "dog",
+    #     "frog",
+    #     "horse",
+    #     "ship",
+    #     "truck",
+    # ]
+    dm = ImageNetDataModule(
+        batch_size=64, num_workers=4, image_size=256,random_crop=False
+    )
+    dm.setup()
+    test_loader = dm.test_dataloader()
+    
+    
+    # target_class_names = run_config.get("target_class_names", None)
+    # if target_class_names is not None:
+    #     logger.info(f"Filtering test dataset for classes: {target_class_names}...")
+    #     test_dataset = filter_dataset_by_class(
+    #         test_dataset, target_class_names, CIFAR10_CLASSES, logger=logger
+    #     )
+    #     test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
 
     # Get model info
     model_type, num_latent_vars, num_categories, codebook_size = get_model_info(model)
@@ -818,7 +829,7 @@ def main(exp_dir, config_path, checkpoint_path, run_config=None):
     active_modules = prepare_modules(
         run_config,
         codebook_size,
-        class_names=target_class_names if target_class_names else CIFAR10_CLASSES,
+        class_names=target_class_names if target_class_names else None,
     )
     logger.info(
         f"Active inference modules: {[type(m).__name__ for m in active_modules]}"
@@ -836,46 +847,47 @@ def main(exp_dir, config_path, checkpoint_path, run_config=None):
             outputs = inference_step(batch, model, device)
             
             if isinstance(model, JSA):
-                batch = {
-                    k: v.to(device) if isinstance(v, torch.Tensor) else v
-                    for k, v in batch.items()
-                }
-                x = model.get_input(batch, model.dataset_key["image_key"])
-                logits = model.proposal_model(x)[0]
-                probs = torch.softmax(logits, dim=-1)
+                pass
+                # batch = {
+                #     k: v.to(device) if isinstance(v, torch.Tensor) else v
+                #     for k, v in batch.items()
+                # }
+                # x = model.get_input(batch, JsaDataset.IMAGE_KEY)  # Assuming image key is consistent
+                # logits = model.proposal_model(x)[0]
+                # probs = torch.softmax(logits, dim=-1)
                 
 
-                sample_probs = probs[0]
-                logger.info(
-                    f"Probs shape: {probs.shape}. Showing Top-3 concentration pre positions:"
-                )
-                H, W, _ = sample_probs.shape
+                # sample_probs = probs[0]
+                # logger.info(
+                #     f"Probs shape: {probs.shape}. Showing Top-3 concentration pre positions:"
+                # )
+                # H, W, _ = sample_probs.shape
 
-                topk_probs, topk_indices = torch.topk(sample_probs, k=3, dim=-1)
-                for h in range(H):
-                    for w in range(W):
+                # topk_probs, topk_indices = torch.topk(sample_probs, k=3, dim=-1)
+                # for h in range(H):
+                #     for w in range(W):
 
-                        vals = topk_probs[h, w].tolist()
-                        inds = topk_indices[h, w].tolist()
+                #         vals = topk_probs[h, w].tolist()
+                #         inds = topk_indices[h, w].tolist()
 
-                        top3_str = ", ".join(
-                            [f"{idx}: {p:.4f}" for idx, p in zip(inds, vals)]
-                        )
-                        logger.info(f"Position ({h},{w}) Top-3: {top3_str}")
-                if hasattr(model, "sampler"):
-                    model.sampler.to(device)
-                    h = model.sampler.sample(
-                        x=x, num_steps=20, parallel=False, return_all=False
-                    )
+                #         top3_str = ", ".join(
+                #             [f"{idx}: {p:.4f}" for idx, p in zip(inds, vals)]
+                #         )
+                #         logger.info(f"Position ({h},{w}) Top-3: {top3_str}")
+                # if hasattr(model, "sampler"):
+                #     model.sampler.to(device)
+                #     h = model.sampler.sample(
+                #         x=x, num_steps=20, parallel=False, return_all=False
+                #     )
 
-                logger.info(f"Sampled latent h with shape: {h.shape}")
-                logger.info(f"h: {h}")
-                logger.info(f"h min/max: {h.min().item()}/{h.max().item()}")
-                logger.info(
-                    f" Acceptance rates per step: {model.sampler.get_acceptance_rate()}"
-                )
-                if i >= 10:
-                    break
+                # logger.info(f"Sampled latent h with shape: {h.shape}")
+                # logger.info(f"h: {h}")
+                # logger.info(f"h min/max: {h.min().item()}/{h.max().item()}")
+                # logger.info(
+                #     f" Acceptance rates per step: {model.sampler.get_acceptance_rate()}"
+                # )
+                # if i >= 10:
+                #     break
             elif isinstance(model, VQModel):
                 pass
                 # batch = {
@@ -883,7 +895,7 @@ def main(exp_dir, config_path, checkpoint_path, run_config=None):
                 #     for k, v in batch.items()
                 # }
                 
-                # x = model.get_input(batch, model.dataset_key["image_key"])
+                # x = model.get_input(batch, JsaDataset.IMAGE_KEY)
                 # quantized, _, info = model.encode(x)
                 # probs = info[1]  # Assuming info[1] contains the probabilities
                 
@@ -931,16 +943,17 @@ if __name__ == "__main__":
         # "egs/cifar10/jsa/categorical_prior_conv/2026-01-15_15-41-30",
         # "egs/cifar10/jsa/categorical_prior_conv/2026-01-27_22-00-33",
         # "egs/cifar10/vqgan/vq_gan_cifar10/2026-02-05_21-02-55",
-        "egs/cifar10/vqgan/vq_gan_cifar10/2026-02-07_22-42-28",
+        "egs/imagenet/vqgan/vq_gan_imagenet/2026-03-01_23-59-54",
+        # "egs/imagenet/jsa/lightning_logs/2026-02-25_15-22-44",
     ]
     target_class_names = ["cat"]
 
     run_config = {
         "metrics": True,
         "visualization": True,
-        "codebook_global": False,
+        "codebook_global": True,
         "codebook_per_class": False,
-        "codebook_spatial_shape": (8, 8),  # Example spatial shape
+        "codebook_spatial_shape": (16, 16),  # Example spatial shape
         "target_class_names": None,
     }
 

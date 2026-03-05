@@ -1,8 +1,7 @@
 import torch
 import torch.nn.functional as F
 from lightning.pytorch import LightningModule
-
-from src.data.cifar10 import DATASET_KEY
+from src.base.base_dataset import JsaDataset
 from src.modules.networks import Encoder, Decoder
 from src.modules.vqvae.vq_adaptor import ConvEncoder, ConvDecoder
 from src.modules.vqvae.quantize import VectorQuantizer2 as VectorQuantizer
@@ -34,7 +33,7 @@ class VQModel(LightningModule):
         self.quantizer: VectorQuantizer = quantizer
         self.base_learning_rate = base_learning_rate
         self.learning_rate = base_learning_rate
-        self.dataset_key = DATASET_KEY
+        self.dataset_key = JsaDataset.IMAGE_KEY
 
         self.quant_conv = torch.nn.Conv2d(
             self.quantizer.in_channels, self.quantizer.e_dim, kernel_size=1
@@ -43,12 +42,10 @@ class VQModel(LightningModule):
             self.quantizer.e_dim, self.quantizer.in_channels, kernel_size=1
         )
 
-        if self.image_key is not None:
-            self.dataset_key["image_key"] = self.image_key
+        
 
         if ckpt_path is not None:
             self.init_from_ckpt(ckpt_path, ignore_keys=ignore_keys)
-        self.image_key = image_key
         if colorize_nlabels is not None:
             assert type(colorize_nlabels) == int
             self.register_buffer("colorize", torch.randn(3, colorize_nlabels, 1, 1))
@@ -142,7 +139,7 @@ class VQModel(LightningModule):
         opt_ae, opt_disc = self.optimizers()
 
         # Forward pass
-        x = self.get_input(batch, self.dataset_key["image_key"])
+        x = self.get_input(batch, self.dataset_key)
         xrec, qloss = self(x)
 
         # Get losses and logs from the loss function
@@ -186,7 +183,7 @@ class VQModel(LightningModule):
         self.manual_backward(discloss)
         opt_disc.step()
     def validation_step(self, batch, batch_idx):
-        x = self.get_input(batch, self.dataset_key["image_key"])
+        x = self.get_input(batch, self.dataset_key)
         quant, qloss, info = self.encode(x)
         xrec = self.decode(quant)
 
@@ -272,7 +269,7 @@ class VQModel(LightningModule):
         """ For segmentation maps with discrete labels, 
         we can colorize them using a random projection to 3 channels for visualization. 
         """
-        assert self.dataset_key["image_key"] == "segmentation"
+        assert self.dataset_key == "segmentation"
         if not hasattr(self, "colorize"):
             self.register_buffer("colorize", torch.randn(3, x.shape[1], 1, 1).to(x))
         x = F.conv2d(x, weight=self.colorize)
@@ -286,7 +283,7 @@ class VQModel(LightningModule):
         Interface for `src.utils.callbacks.image_logger_callback.ImageLogger`
         """
         log = dict()
-        x = self.get_input(batch, self.dataset_key["image_key"])
+        x = self.get_input(batch, self.dataset_key)
         x = x.to(self.device)
         xrec, _ = self(x)
         if x.shape[1] > 3:
@@ -303,7 +300,7 @@ class VQModel(LightningModule):
 
         Interface for `src.utils.callbacks.codebook_stats_callback.CodebookStats`
         """
-        x = self.get_input(batch, self.dataset_key["image_key"])
+        x = self.get_input(batch, self.dataset_key)
         _, _, info = self.encode(x)
         return info[2]  # indices
 

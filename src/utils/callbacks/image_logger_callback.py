@@ -9,12 +9,31 @@ from lightning.pytorch.loggers import WandbLogger, TensorBoardLogger
 
 
 class ImageLogger(Callback):
+    """ A callback that logs images during training and validation.
+    
+    It supports both WandbLogger and TensorBoardLogger.
+    The images to log are obtained from the `log_images` method of the LightningModule, which should return a dictionary of images to log.
+    The images are logged at a specified batch frequency and can be clamped to the range [-1, 1] for visualization.
+    
+    Args:
+        batch_frequency (int): How often to log images (in terms of batch index).
+        max_images (int): Maximum number of images to log per batch.
+        clamp (bool): Whether to clamp the images to the range [-1, 1] before logging.
+        increase_log_steps (bool): Whether to log at exponentially increasing batch indices (e.g., 1, 2, 4, 8, ...) in addition to the regular
+            batch frequency.
+    
+    Notes:
+        1. The `log_images` method of the LightningModule should return a dictionary where keys are image tags (e.g., "inputs", "reconstructions") and values are tensors of shape (N, C, H, W).
+        2. When increasing log steps, the callback will log images at batch indices that are powers of 2 up to the batch frequency, in addition to logging at every `batch_frequency` batches.
+        
+    """
     def __init__(
-        self, batch_frequency, max_images, clamp=True, increase_log_steps=True
+        self, batch_frequency, max_images, nrow=4, clamp=True, increase_log_steps=True
     ):
         super().__init__()
         self.batch_freq = batch_frequency
         self.max_images = max_images
+        self.nrow = nrow
         self.logger_log_images = {
             WandbLogger: self._wandb,
             TensorBoardLogger: self._testtube,
@@ -37,7 +56,7 @@ class ImageLogger(Callback):
     def _testtube(self, pl_module, images, batch_idx, split):
         for k in images:
             grid = torchvision.utils.make_grid(
-                images[k], nrow=4, padding=2, normalize=True, value_range=(-1, 1)
+                images[k], nrow=self.nrow, padding=2, normalize=True, value_range=(-1, 1)
             )
 
             tag = f"{split}/{k}"
@@ -50,7 +69,7 @@ class ImageLogger(Callback):
         root = os.path.join(save_dir, "images", split)
         for k in images:
             grid = torchvision.utils.make_grid(
-                images[k], nrow=4, padding=2, normalize=True, value_range=(-1, 1)
+                images[k], nrow=self.nrow, padding=2, normalize=True, value_range=(-1, 1)
             )
 
             grid = (grid + 1.0) / 2.0  # -1,1 -> 0,1; c,h,w

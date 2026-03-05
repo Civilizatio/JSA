@@ -406,7 +406,7 @@ class JSA(LightningModule):
         """
         x = self.get_input(batch, JsaDataset.IMAGE_KEY)
         h = self.proposal_model.encode(
-            x, sane_index_shape=False
+            x, flatten=True
         )  # [B*H*W*num_latent_vars, 1]
         indices = encode_multidim_to_index(
             h, self.proposal_model.num_categories

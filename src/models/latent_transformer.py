@@ -34,6 +34,7 @@ class LatentTransformer(LightningModule):
         pkeep: float = 0.9,
         cond_stage_dataset_key: str = "image",
         base_learning_rate: float = 1e-4,
+        weight_decay: float = 0.01,
     ):
         super().__init__()
 
@@ -46,6 +47,7 @@ class LatentTransformer(LightningModule):
         self.pkeep = pkeep
         self.cond_stage_dataset_key = cond_stage_dataset_key
         self.learning_rate = base_learning_rate
+        self.weight_decay = weight_decay
 
         self.train_logger = (
             None  # will be initialized in on_fit_start() when trainer is available
@@ -538,7 +540,7 @@ class LatentTransformer(LightningModule):
 
         # Create optimizer object
         optim_groups = [
-            {"params": decay_params, "weight_decay": 0.01},
+            {"params": decay_params, "weight_decay": self.weight_decay},
             {"params": no_decay_params, "weight_decay": 0.0},
         ]
 

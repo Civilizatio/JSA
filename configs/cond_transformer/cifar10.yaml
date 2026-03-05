@@ -46,9 +46,12 @@ model:
         # some args for the transformer net
         vocab_size: 1025
         block_size: 64
-        n_layer: 12
+        n_layer: 6
         n_head: 4
         n_embd: 128
+        embd_pdrop: 0.1
+        resid_pdrop: 0.1
+        attn_pdrop: 0.1
 
     permuter:
         class_path: src.modules.permuter.Identity
@@ -57,20 +60,21 @@ model:
 
     # The probability of keeping the original token of the input sequence, 
     # instead of replacing it with the random token, during training.
-    pkeep: 1.0
+    pkeep: 0.9
     
     # The key in the dataloader batch for the conditioning stage, 
     # may be different from the image key used in the first stage model, 
     # e.g., it can be "label" for class-conditional generation
     cond_stage_dataset_key: image
 
-    base_learning_rate: 4.5e-6
+    base_learning_rate: 1e-6
+    weight_decay: 0.0001
 
 data:
   class_path: src.data.cifar10.CIFAR10DataModule
   init_args:
     root: ./data/cifar10
-    batch_size: 128
+    batch_size: 64
     num_workers: 4
 
 trainer:
@@ -103,7 +107,8 @@ trainer:
     - class_path: src.utils.callbacks.image_logger_callback.ImageLogger
       init_args:
         batch_frequency: 750
-        max_images: 25
+        max_images: 16
+        nrow: 4
         clamp: true
 
   max_epochs: 100000

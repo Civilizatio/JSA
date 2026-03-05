@@ -57,9 +57,7 @@ class LPIPS(nn.Module):
             spatial_average(lins[kk].model(diffs[kk]), keepdim=True)
             for kk in range(len(self.chns))
         ]
-        val = res[0]
-        for l in range(1, len(self.chns)):
-            val += res[l]
+        val = sum(res)
         return val
 
 
