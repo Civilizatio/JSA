@@ -13,7 +13,7 @@ from src.utils.codebook_utils import (
     encode_multidim_to_index,
     plot_codebook_usage_distribution,
 )
-from src.utils.controllers import SigmaController
+from src.utils.schedulers import SigmaScheduler
 from src.utils.file_logger import get_file_logger
 
 from src.modules.losses.jsa_gan import JSAGANLoss
@@ -35,7 +35,7 @@ class JSA(LightningModule):
         init_from_ckpt: str = None,
         init_mode: str = "resume",  # "resume" or "warm_start"
         init_strict: bool = False,
-        sigma_controller=None,
+        sigma_scheduler:SigmaScheduler=None,
         global_only_steps: int = 10000,
         block_strategy_prob: float = 0.5,
     ):
@@ -68,10 +68,7 @@ class JSA(LightningModule):
         self.init_strict = init_strict
         self._weights_loaded = False  # guard to ensure weights are loaded only once
 
-        self.sigma_controller: SigmaController | None = (
-            instantiate(sigma_controller) if sigma_controller is not None else None
-        )
-
+        self.sigma_scheduler: SigmaScheduler = sigma_scheduler
         self.train_logger = None  # Not initialized yet
 
         self.log_codebook_utilization_test = False
@@ -204,8 +201,8 @@ class JSA(LightningModule):
         self.train_logger.info(self.proposal_model.net)
 
         # set sigma for joint model if applicable
-        if self.sigma_controller is not None:
-            init_sigma = self.sigma_controller.sigma
+        if self.sigma_scheduler is not None and getattr(self.joint_model, "sigma_mode", None) == "scheduled":
+            init_sigma = self.sigma_scheduler.get_sigma(0)
             if hasattr(self.joint_model, "set_sigma"):
                 self.joint_model.set_sigma(init_sigma)
                 self.train_logger.info(
@@ -313,20 +310,17 @@ class JSA(LightningModule):
         if hasattr(self.joint_model, "sigma") and self.joint_model.sigma is not None:
             self.log("train/joint_model_sigma", self.joint_model.sigma, prog_bar=True)
 
-        if self.sigma_controller is None:
+        if self.sigma_scheduler is None:
             return
 
-        new_sigma, info = self.sigma_controller.step(
-            global_step=self.global_step,
-            acceptance_rate=acceptance_rate,
+        new_sigma = self.sigma_scheduler.get_sigma(
+            step=self.global_step,
         )
         if hasattr(self.joint_model, "set_sigma"):
             self.joint_model.set_sigma(new_sigma)
 
         self.log("train/sigma", new_sigma, prog_bar=True)
-        if "ref_sigma" in info:
-            self.log("train/ref_sigma", info["ref_sigma"], prog_bar=True)
-
+       
     # ========================= Validation =========================
 
     def validation_step(self, batch, batch_idx):

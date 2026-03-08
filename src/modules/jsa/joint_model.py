@@ -239,16 +239,23 @@ class JointModelCategoricalGaussian(BaseJointModel):
         self,
         net: nn.Module,
         sigma=0.1,
+        sigma_mode:str="learnable", # whether sigma is learnable or fixed or scheduled
         sample_chunk_size=8,
     ):
         super().__init__()
 
-        # self.num_latent_vars = num_latent_vars
         self.sample_chunk_size = sample_chunk_size # for sampling in chunks to save memory
-        # self.register_buffer("sigma", torch.tensor(float(sigma)))
-
-        self.log_sigma = nn.Parameter(torch.log(torch.tensor(float(sigma))))
+        self.sigma_mode = sigma_mode
         self.net = net
+        
+        init_log_sigma = torch.log(torch.tensor(float(sigma)))
+        if self.sigma_mode == "learnable":
+            self.log_sigma = nn.Parameter(init_log_sigma.clone())
+        elif self.sigma_mode in ["fixed", "scheduled"]:
+            self.register_buffer("log_sigma", init_log_sigma.clone())
+        else:
+            raise ValueError(f"Invalid sigma_mode: {self.sigma_mode}")
+        
 
     @property
     def latent_dim(self):
@@ -268,6 +275,10 @@ class JointModelCategoricalGaussian(BaseJointModel):
     # def set_sigma(self, sigma):
     #     self.sigma.fill_(sigma)
     def set_sigma(self, sigma):
+        """ Only used when sigma is fixed or scheduled, not learnable """
+        if self.sigma_mode == "learnable":
+            raise ValueError("Cannot set sigma when it is learnable")
+        
         with torch.no_grad():
             self.log_sigma.fill_(math.log(sigma))
             

@@ -15,6 +15,7 @@ import shutil
 from lightning.pytorch.cli import LightningCLI
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
+import yaml
 
 from src.utils.codebook_utils import (
     encode_multidim_to_index,
@@ -31,7 +32,7 @@ from src.utils.distribution_analysis import (
     umap_embedding,
     plot_embedding,
 )
-from src.utils.module_utils import load_from_file
+from src.utils.module_utils import load_from_file, instantiate_from_config
 
 
 from tqdm import tqdm
@@ -447,10 +448,113 @@ class Visualizer(InferenceModule):
         self.logger.info(f"Saved visualization images to {self.save_dir}")
 
 
-class InferenceCLI(LightningCLI):
-    def add_arguments_to_parser(self, parser):
-        # Allow these keys in config by adding them as arguments
-        parser.add_argument("--ckpt_path", type=str, default=None)
+class ExtraStatsTracker(InferenceModule):
+    
+    def __init__(self, track_extras=False):
+        self.track_extras = track_extras
+        self.stats = {}
+        
+    def setup(self, device, logger, save_dir):
+        self.device = device
+        self.logger = logger
+        self.save_dir = save_dir
+
+    def set_model(self, model):
+        self.model = model
+
+    def update(self, batch, outputs):
+        if not self.track_extras:
+            return
+        
+        # 这里的提取之前杂冗的 JSA / VQModel 里的逻辑
+        # x, indices 等均可从 batch 或 outputs 里获取
+        if isinstance(self.model, JSA):
+            pass
+            # batch = {
+            #     k: v.to(device) if isinstance(v, torch.Tensor) else v
+            #     for k, v in batch.items()
+            # }
+            # x = model.get_input(batch, JsaDataset.IMAGE_KEY)  # Assuming image key is consistent
+            # logits = model.proposal_model(x)[0]
+            # probs = torch.softmax(logits, dim=-1)
+            
+
+            # sample_probs = probs[0]
+            # logger.info(
+            #     f"Probs shape: {probs.shape}. Showing Top-3 concentration pre positions:"
+            # )
+            # H, W, _ = sample_probs.shape
+
+            # topk_probs, topk_indices = torch.topk(sample_probs, k=3, dim=-1)
+            # for h in range(H):
+            #     for w in range(W):
+
+            #         vals = topk_probs[h, w].tolist()
+            #         inds = topk_indices[h, w].tolist()
+
+            #         top3_str = ", ".join(
+            #             [f"{idx}: {p:.4f}" for idx, p in zip(inds, vals)]
+            #         )
+            #         logger.info(f"Position ({h},{w}) Top-3: {top3_str}")
+            # if hasattr(model, "sampler"):
+            #     model.sampler.to(device)
+            #     h = model.sampler.sample(
+            #         x=x, num_steps=20, parallel=False, return_all=False
+            #     )
+
+            # logger.info(f"Sampled latent h with shape: {h.shape}")
+            # logger.info(f"h: {h}")
+            # logger.info(f"h min/max: {h.min().item()}/{h.max().item()}")
+            # logger.info(
+            #     f" Acceptance rates per step: {model.sampler.get_acceptance_rate()}"
+            # )
+            # if i >= 10:
+            #     break
+        elif isinstance(self.model, VQModel):
+            pass
+            # batch = {
+            #     k: v.to(device) if isinstance(v, torch.Tensor) else v
+            #     for k, v in batch.items()
+            # }
+            
+            # x = model.get_input(batch, JsaDataset.IMAGE_KEY)
+            # quantized, _, info = model.encode(x)
+            # probs = info[1]  # Assuming info[1] contains the probabilities
+            
+            # sample_probs = probs[0]  # First sample in the batch
+            # logger.info(
+            #     f"Probs shape: {probs.shape}. Showing Top-3 concentration pre positions:"
+            # )
+            # H, W, _ = sample_probs.shape
+            # topk_probs, topk_indices = torch.topk(sample_probs, k=3, dim=-1)
+            # for h in range(H):
+            #     for w in range(W):
+            #         vals = topk_probs[h, w].tolist()
+            #         inds = topk_indices[h, w].tolist()
+            #         top3_str = ", ".join(
+            #             [f"{idx}: {p:.4f}" for idx, p in zip(inds, vals)]
+            #         )
+            #         logger.info(f"Position ({h},{w}) Top-3: {top3_str}")
+            # embedding = model.quantizer.embedding.weight
+            # # 计算每个codeword的norm
+            # codeword_norms = torch.norm(embedding, dim=1)
+            # logger.info(f"Codeword norms: {codeword_norms}")
+            # # 计算不同的codeword之间的距离矩阵
+            # codeword_distances = torch.cdist(embedding, embedding, p=2)
+            # logger.info(f"Codeword distances shape: {codeword_distances.shape}")
+            # logger.info(f"Codeword distances: {codeword_distances}")
+            
+            # logger.info(f"Quantized shape: {quantized.shape}")
+        if isinstance(self.model, JSA):
+            pass  # /* 把你原来属于 JSA 的大量 stats 代码放这里 */
+        elif hasattr(self.model, "decode_code"):  # 代替写死 VQModel
+            pass  # /* 把你原来属于 VQModel 的块放这里 */
+
+    def finalize(self):
+        if not self.track_extras:
+            return
+        # 输出这部分的日志或保存统计图
+        self.logger.info("Extra stats finalized.")
 
 
 def prepare_modules(run_config, codebook_size, class_names):
@@ -480,6 +584,11 @@ def prepare_modules(run_config, codebook_size, class_names):
     if run_config.get("visualization", True):
         visualizer = Visualizer(max_samples=10)
         modules.append(visualizer)
+        
+    # Extra Stats Tracker
+    if run_config.get("track_extras", False):
+        extra_stats_tracker = ExtraStatsTracker(track_extras=True)
+        modules.append(extra_stats_tracker)
 
     return modules
 
@@ -773,51 +882,28 @@ def main(exp_dir, config_path, checkpoint_path, run_config=None):
 
     # Load model
     device = "cuda:7" if torch.cuda.is_available() else "cpu"
-    # cli = InferenceCLI(
-    #     run=False,
-    #     args=[
-    #         "--config",
-    #         config_path,
-    #     ],
-    # )
-
-    # model = cli.model
-    # ckpt = torch.load(checkpoint_path, map_location=device)
-    # model.load_state_dict(ckpt["state_dict"])
     model = load_from_file(config_path=config_path, ckpt_path=checkpoint_path, freeze=True)
     model = model.to(device)
     model.eval()
 
     # Prepare test data
-    # test_dataset = CIFAR10Dataset(root="./data/cifar10", train=False)
-    # test_loader = DataLoader(test_dataset, batch_size=50, shuffle=False)
-
-    # CIFAR10_CLASSES = [
-    #     "airplane",
-    #     "automobile",
-    #     "bird",
-    #     "cat",
-    #     "deer",
-    #     "dog",
-    #     "frog",
-    #     "horse",
-    #     "ship",
-    #     "truck",
-    # ]
-    dm = ImageNetDataModule(
-        batch_size=64, num_workers=4, image_size=256,random_crop=False
-    )
+    with open(config_path, "r") as f:
+        config = yaml.safe_load(f)
+        
+    data_config = config.get("data", {})
+    if data_config is None:
+        raise ValueError("Data configuration not found in config file.")
+    
+    logger.info(f"Loading datamodule: {data_config.get('class_path')}")
+    dm = instantiate_from_config(data_config)
     dm.setup()
-    test_loader = dm.test_dataloader()
     
-    
-    # target_class_names = run_config.get("target_class_names", None)
-    # if target_class_names is not None:
-    #     logger.info(f"Filtering test dataset for classes: {target_class_names}...")
-    #     test_dataset = filter_dataset_by_class(
-    #         test_dataset, target_class_names, CIFAR10_CLASSES, logger=logger
-    #     )
-    #     test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
+    try:
+        test_loader = dm.test_dataloader()
+    except NotImplementedError:
+        logger.warning("test_dataloader not implemented in datamodule. Using train_dataloader instead.")
+        test_loader = dm.val_dataloader()
+        
 
     # Get model info
     model_type, num_latent_vars, num_categories, codebook_size = get_model_info(model)
@@ -846,83 +932,7 @@ def main(exp_dir, config_path, checkpoint_path, run_config=None):
 
             outputs = inference_step(batch, model, device)
             
-            if isinstance(model, JSA):
-                pass
-                # batch = {
-                #     k: v.to(device) if isinstance(v, torch.Tensor) else v
-                #     for k, v in batch.items()
-                # }
-                # x = model.get_input(batch, JsaDataset.IMAGE_KEY)  # Assuming image key is consistent
-                # logits = model.proposal_model(x)[0]
-                # probs = torch.softmax(logits, dim=-1)
-                
-
-                # sample_probs = probs[0]
-                # logger.info(
-                #     f"Probs shape: {probs.shape}. Showing Top-3 concentration pre positions:"
-                # )
-                # H, W, _ = sample_probs.shape
-
-                # topk_probs, topk_indices = torch.topk(sample_probs, k=3, dim=-1)
-                # for h in range(H):
-                #     for w in range(W):
-
-                #         vals = topk_probs[h, w].tolist()
-                #         inds = topk_indices[h, w].tolist()
-
-                #         top3_str = ", ".join(
-                #             [f"{idx}: {p:.4f}" for idx, p in zip(inds, vals)]
-                #         )
-                #         logger.info(f"Position ({h},{w}) Top-3: {top3_str}")
-                # if hasattr(model, "sampler"):
-                #     model.sampler.to(device)
-                #     h = model.sampler.sample(
-                #         x=x, num_steps=20, parallel=False, return_all=False
-                #     )
-
-                # logger.info(f"Sampled latent h with shape: {h.shape}")
-                # logger.info(f"h: {h}")
-                # logger.info(f"h min/max: {h.min().item()}/{h.max().item()}")
-                # logger.info(
-                #     f" Acceptance rates per step: {model.sampler.get_acceptance_rate()}"
-                # )
-                # if i >= 10:
-                #     break
-            elif isinstance(model, VQModel):
-                pass
-                # batch = {
-                #     k: v.to(device) if isinstance(v, torch.Tensor) else v
-                #     for k, v in batch.items()
-                # }
-                
-                # x = model.get_input(batch, JsaDataset.IMAGE_KEY)
-                # quantized, _, info = model.encode(x)
-                # probs = info[1]  # Assuming info[1] contains the probabilities
-                
-                # sample_probs = probs[0]  # First sample in the batch
-                # logger.info(
-                #     f"Probs shape: {probs.shape}. Showing Top-3 concentration pre positions:"
-                # )
-                # H, W, _ = sample_probs.shape
-                # topk_probs, topk_indices = torch.topk(sample_probs, k=3, dim=-1)
-                # for h in range(H):
-                #     for w in range(W):
-                #         vals = topk_probs[h, w].tolist()
-                #         inds = topk_indices[h, w].tolist()
-                #         top3_str = ", ".join(
-                #             [f"{idx}: {p:.4f}" for idx, p in zip(inds, vals)]
-                #         )
-                #         logger.info(f"Position ({h},{w}) Top-3: {top3_str}")
-                # embedding = model.quantizer.embedding.weight
-                # # 计算每个codeword的norm
-                # codeword_norms = torch.norm(embedding, dim=1)
-                # logger.info(f"Codeword norms: {codeword_norms}")
-                # # 计算不同的codeword之间的距离矩阵
-                # codeword_distances = torch.cdist(embedding, embedding, p=2)
-                # logger.info(f"Codeword distances shape: {codeword_distances.shape}")
-                # logger.info(f"Codeword distances: {codeword_distances}")
-                
-                # logger.info(f"Quantized shape: {quantized.shape}")
+            
             # Update all modules
             for module in active_modules:
                 module.update(batch, outputs)
@@ -954,7 +964,7 @@ if __name__ == "__main__":
         "codebook_global": True,
         "codebook_per_class": False,
         "codebook_spatial_shape": (16, 16),  # Example spatial shape
-        "target_class_names": None,
+        "track_extras": False,  # Whether to track extra stats specific to JSA/VQModel
     }
 
     for exp_dir in dir_list:
