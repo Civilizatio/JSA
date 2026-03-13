@@ -8,8 +8,8 @@ model:
     # then load the model from the config and ckpt path. 
     # Otherwise, load the model from the class_path and init_args.
 
-      config_path: ./egs/imagenet/jsa/lightning_logs/2026-02-25_15-22-44/config.yaml
-      ckpt_path: ./egs/imagenet/jsa/lightning_logs/2026-02-25_15-22-44/checkpoints/last.ckpt
+      config_path: ./egs/imagenet/vqgan/vq_gan_imagenet/2026-03-01_23-59-54/config.yaml
+      ckpt_path: ./egs/imagenet/vqgan/vq_gan_imagenet/2026-03-01_23-59-54/checkpoints/last.ckpt
 
       class_path: null
       init_args: null
@@ -67,7 +67,7 @@ model:
     # e.g., it can be "label" for class-conditional generation
     cond_stage_dataset_key: image
 
-    base_learning_rate: 1e-6
+    base_learning_rate: 4.5e-6
     weight_decay: 0.0001
 
 data:

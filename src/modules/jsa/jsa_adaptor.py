@@ -121,7 +121,7 @@ class ConvDecoder(nn.Module):
         self.final_activation = final_activation
         
         self._latent_dim = sum(self.embedding_dims)
-        
+   
     @property
     def latent_dim(self):
         return self._latent_dim

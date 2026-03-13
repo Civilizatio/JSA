@@ -319,6 +319,11 @@ class VQModel(LightningModule):
 
         Interface for downstream tasks like `src.models.latent_transformer.LatentTransformer`
         """
+        #! We need to turn the `sane_index_shape` in `VectorQuantizer` to True to get the original indices shape [B, H', W'] for the downstream transformer model, 
+        #! while the default `sane_index_shape=False` returns a flattened indices shape [B*H'*W'] which during training.
+        if hasattr(self.quantizer, "sane_index_shape") and not self.quantizer.sane_index_shape:
+            self.quantizer.sane_index_shape = True
+            
         _, _, info = self.encode(x)
         if flatten:
             # If flatten is True, we return a 2D tensor of shape [B, T] where T = H'*W'

@@ -224,8 +224,12 @@ class MISampler(BaseSampler):
         Returns:
             mask: Block mask, shape same as input shape, dtype=torch.bool
         """
-        mask = torch.zeros(h_shape, dtype=torch.bool,device=next(self.proposal_model.parameters()).device)
-        
+        mask = torch.zeros(
+            h_shape,
+            dtype=torch.bool,
+            device=next(self.proposal_model.parameters()).device,
+        )
+
         if strategy == "row":
             row = torch.randint(0, h_shape[2], (1,)).item()
             mask[:, :, row, :, :] = True
@@ -242,8 +246,7 @@ class MISampler(BaseSampler):
         else:
             raise ValueError(f"Unsupported block sampling strategy: {strategy}")
         return mask
-        
-    
+
     @torch.no_grad()
     def step(self, x, idx=None, h_old=None, strategy="none"):
         """
@@ -304,7 +307,15 @@ class MISampler(BaseSampler):
         return h_next
 
     @torch.no_grad()
-    def sample(self, x, idx=None, num_steps=1, parallel=False, return_all=False, strategy="none"):
+    def sample(
+        self,
+        x,
+        idx=None,
+        num_steps=1,
+        parallel=False,
+        return_all=False,
+        strategy="none",
+    ):
         """Generate samples using MIS sampler.
 
 
@@ -319,6 +330,7 @@ class MISampler(BaseSampler):
 
         if parallel:
             import warnings
+
             warnings.warn(
                 "Parallel sampling is enabled. There is no block-wise sampling in parallel mode."
             )
