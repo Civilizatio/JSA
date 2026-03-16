@@ -34,13 +34,38 @@ class MISampler(BaseSampler):
         use_cache=False,  # whether to use cache mechanism
         dataset_size=None,  # required if use_cache is True
         element_shape=None,  # for picture, is (H, W)
+        cache_dtype=None,  # dtype for cache
     ):
         super().__init__()
         self.joint_model = joint_model
         self.proposal_model = proposal_model
         self.dataset_size = dataset_size
-        self.use_cache = use_cache  # use the setter, which initializes cache if needed
         self.element_shape = element_shape
+        
+        if cache_dtype is not None:
+            self.cache_dtype = cache_dtype
+        else:
+            try:
+                
+                if type(self.joint_model.num_categories) == list:
+                    codebook_size = max(self.joint_model.num_categories)
+                elif type(self.joint_model.num_categories) == int:
+                    codebook_size = self.joint_model.num_categories
+                else:
+                    raise ValueError(f"Unsupported type for num_categories: {type(self.joint_model.num_categories)}")
+                
+                if codebook_size <= torch.iinfo(torch.int8).max:
+                    self.cache_dtype = torch.int8
+                elif codebook_size <= torch.iinfo(torch.int16).max:
+                    self.cache_dtype = torch.int16
+                elif codebook_size <= torch.iinfo(torch.int32).max:
+                    self.cache_dtype = torch.int32
+                else:                    
+                    self.cache_dtype = torch.int64
+            except AttributeError:
+                self.cache_dtype = torch.int64  # default to int64 if num_categories is not available
+        
+        self.use_cache = use_cache  # use the setter, which initializes cache if needed
         self.reset_acceptance_stats()  # reset acceptance statistics
 
     @property
@@ -72,7 +97,7 @@ class MISampler(BaseSampler):
         self.cache = torch.full(
             cache_shape,
             int(-1),
-            dtype=torch.long,
+            dtype=self.cache_dtype,
             device=next(self.proposal_model.parameters()).device,
         )
 
@@ -301,7 +326,7 @@ class MISampler(BaseSampler):
             h_next_selected = h_next[
                 torch.arange(h_next.shape[0]), rand_indices
             ]  # [batch_size, ..., num_latent_vars]
-            self.cache[idx] = h_next_selected.detach().long()
+            self.cache[idx] = h_next_selected.detach().to(self.cache.dtype)  # update cache, convert to cache dtype
             self.updated_mask[idx] = True  # mark as updated
 
         return h_next
@@ -457,7 +482,7 @@ class MISampler(BaseSampler):
 
         if self.use_cache and idx is not None:
             # Update cache with the final samples
-            self.cache[idx] = h_final.squeeze(1).detach().long()
+            self.cache[idx] = h_final.squeeze(1).detach().to(self.cache.dtype)  # update cache, convert to cache dtype
             self.updated_mask[idx] = True  # mark as updated
 
         return h_result  # [B, 1 or num_steps, ..., num_latent_vars]
@@ -509,7 +534,15 @@ class MISampler(BaseSampler):
             return  # No need to sync if not distributed
 
         world_size = dist.get_world_size()
-        local_cache = self.cache
+        
+        # NCCL backend doesn't support Int8 or Int16 type tensors, 
+        # so we cast the cache to Int32 for communication if necessary
+        orig_dtype = self.cache.dtype
+        if orig_dtype in [torch.int8, torch.int16]:
+            local_cache = self.cache.to(torch.int32)
+        else:
+            local_cache = self.cache
+            
         local_mask = self.updated_mask
 
         cache_list = [torch.empty_like(local_cache) for _ in range(world_size)]
@@ -525,7 +558,7 @@ class MISampler(BaseSampler):
             cache_r = cache_list[r]
             merged_cache[mask_r] = cache_r[mask_r]
 
-        self.cache.copy_(merged_cache)
+        self.cache.copy_(merged_cache.to(orig_dtype))
         self.updated_mask.zero_()  # reset updated mask after sync
 
 

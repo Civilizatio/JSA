@@ -51,7 +51,7 @@ model:
     sampler:
       _target_: src.samplers.misampler.MISampler
       use_cache: false # initial value, will be updated during training
-      dataset_size: 50000
+      dataset_size: 1281167 # size of imagenet train set
       element_shape: [16, 16] # height and width of latent variable
     gan_loss: null
       # class_path: src.models.components.losses.JSAGANLoss
@@ -67,7 +67,7 @@ model:
     base_lr_proposal: 4.5e-07
     base_lr_discriminator: 1.86e-07
     num_mis_steps: 20
-    cache_start_epoch: 600
+    cache_start_epoch: 0 # epoch to start using cache
     global_only_steps: 1500000000
     block_strategy_prob: 0.0 # if =0, always use global strategy; if =1, always use block strategy; if in between, use block strategy with this probability
 
@@ -81,14 +81,15 @@ model:
       # init_sigma: 0.1
       # clamp_to_schedule: true
 
-    scheduler:
-      _target_: src.utils.schedulers.SigmaScheduler
-      max_val: 0.2
-      min_val: 0.02
-      warmup_steps: 20000
-      total_steps: 100000 # if using epochs, make sure to set max_epochs in trainer
-      hold_steps: 30000
-      mode: cosine
+    sigma_scheduler:
+      class_path: src.utils.schedulers.SigmaScheduler
+      init_args:
+        max_val: 0.2
+        min_val: 0.02
+        warmup_steps: 20000
+        total_steps: 100000 # if using epochs, make sure to set max_epochs in trainer
+        hold_steps: 30000
+        mode: cosine
 
       # adaptive_controller:
       #   _target_: src.utils.controllers.ParameterController

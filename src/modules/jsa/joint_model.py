@@ -517,7 +517,7 @@ class JointModelCategoricalGaussian(BaseJointModel):
         if return_forward:
             mean_x_last = None
             
-        sigma = self.sigma
+     
         
         for i in range(0, num_samples, self.sample_chunk_size):
             chunk_size = min(self.sample_chunk_size, num_samples - i)
@@ -534,7 +534,7 @@ class JointModelCategoricalGaussian(BaseJointModel):
             # mse = nn.MSELoss(reduction='mean')
             loss_mse = mse(mean_x_chunk, x_expanded)  # mean squared error over all dimensions
             # Compute loss for the chunk
-            loss_chunk = loss_mse/(2 * sigma**2) + torch.log(sigma)  # mean over all dimensions
+            loss_chunk = loss_mse/(2 * self.sigma**2) + torch.log(self.sigma)  # mean over all dimensions
             # loss_chunk = mse(mean_x_chunk, x_expanded)/(2 * sigma**2)  # mean over all dimensions
             
             # backward if function provided

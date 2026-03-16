@@ -212,8 +212,13 @@ class JSA(LightningModule):
     def on_train_epoch_start(self):
         if self.current_epoch >= self.cache_start_epoch:
             self.sampler.use_cache = True
+            if self.train_logger is not None:
+                self.train_logger.info(
+                    f"Epoch {self.current_epoch}: Cache enabled for sampler."
+                )
         else:
             self.sampler.use_cache = False
+            
 
         # Reset acceptance stats
         self.sampler.reset_acceptance_stats()
@@ -237,7 +242,7 @@ class JSA(LightningModule):
             x,
             idx=idx,
             num_steps=self.num_mis_steps,
-            parallel=False,
+            parallel=True,
             return_all=False,
             strategy=self._choose_sampling_strategy(),
         )  # [B, num_samples, ..., num_latent_vars]
@@ -310,16 +315,15 @@ class JSA(LightningModule):
         if hasattr(self.joint_model, "sigma") and self.joint_model.sigma is not None:
             self.log("train/joint_model_sigma", self.joint_model.sigma, prog_bar=True)
 
-        if self.sigma_scheduler is None:
-            return
+        if self.sigma_scheduler is not None and getattr(self.joint_model, "sigma_mode", None) == "scheduled":
 
-        new_sigma = self.sigma_scheduler.get_sigma(
-            step=self.global_step,
-        )
-        if hasattr(self.joint_model, "set_sigma"):
-            self.joint_model.set_sigma(new_sigma)
-
-        self.log("train/sigma", new_sigma, prog_bar=True)
+            new_sigma = self.sigma_scheduler.get_sigma(
+                step=self.global_step,
+            )
+            if hasattr(self.joint_model, "set_sigma"):
+                self.joint_model.set_sigma(new_sigma)
+                
+    
        
     # ========================= Validation =========================
 
