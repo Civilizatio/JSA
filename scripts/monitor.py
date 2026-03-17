@@ -1,4 +1,4 @@
-# monitor.py
+# scripts/monitor.py
 """
 Monitor training experiments and send alerts for anomalies.
 This script monitors the status of a training experiment, including:

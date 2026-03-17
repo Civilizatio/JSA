@@ -33,7 +33,7 @@ echo "👉 Tip: You can open a new terminal and run \`tail -f $LOG_FILE\` to vie
 
 # 4. If monitoring is enabled, start the monitor.py script in the background and print its PID
 if [ "$ENABLE_MONITOR" = true ]; then
-    python monitor.py --pid $TRAIN_PID --log "$LOG_FILE" --devices $CUDA_DEVICES &
+    python scripts/monitor.py --pid $TRAIN_PID --log "$LOG_FILE" --devices $CUDA_DEVICES &
     MONITOR_PID=$!
     echo "[Monitoring enabled] Monitor process started with PID: $MONITOR_PID"
 else

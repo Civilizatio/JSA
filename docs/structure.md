@@ -33,6 +33,7 @@
 ├── egs/                           # 实验结果及日志记录存放文件夹
 ├── scripts/                       # 运行脚本
 │   ├── infer.py                   # 推断/测试脚本
+│   ├── monitor.py                 # 监控脚本
 │   └── train.py                   # 训练脚本
 ├── src/                           # 核心代码
 │   ├── base/                      # 基础模块（抽象类等）
@@ -46,7 +47,6 @@
 │   ├── samplers/                  # 采样器实现
 │   └── utils/                     # 工具类和回调函数
 ├── LICENSE                        # 许可证
-├── monitor.py                     # 监控脚本
 ├── README.md                      # 项目说明
 ├── requirements.txt               # 依赖库清单
 ├── run.sh                         # 运行脚本
