@@ -1,7 +1,7 @@
 # Code Summary
 
 主要是对代码的一些总结和说明。
-这里针对的主要是 [`Net2NetTransformer`](../taming/models/cond_transformer.py) 相关的代码，这个类针对的是 VQ-GAN 训练的第二个阶段，即训练一个 Transformer 来对 VQ-GAN 的离散潜在空间进行建模。
+这里针对的主要是 [`Net2NetTransformer`](../taming/models/latent_transformer.py) 相关的代码，这个类针对的是 VQ-GAN 训练的第二个阶段，即训练一个 Transformer 来对 VQ-GAN 的离散潜在空间进行建模。
 
 ## `Net2NetTransformer`
 

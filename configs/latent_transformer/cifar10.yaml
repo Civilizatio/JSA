@@ -8,8 +8,8 @@ model:
     # then load the model from the config and ckpt path. 
     # Otherwise, load the model from the class_path and init_args.
 
-      config_path: ./egs/imagenet/vqgan/vq_gan_imagenet/2026-03-01_23-59-54/config.yaml
-      ckpt_path: ./egs/imagenet/vqgan/vq_gan_imagenet/2026-03-01_23-59-54/checkpoints/last.ckpt
+      config_path: ./egs/cifar10/jsa/categorical_prior_conv/2026-01-15_15-43-39/config.yaml
+      ckpt_path: ./egs/cifar10/jsa/categorical_prior_conv/2026-01-15_15-43-39/checkpoints/last.ckpt
 
       class_path: null
       init_args: null
@@ -45,13 +45,13 @@ model:
       init_args:
         # some args for the transformer net
         vocab_size: 1025
-        block_size: 256
-        n_layer: 12
-        n_head: 8
-        n_embd: 512
-        embd_pdrop: 0.1
-        resid_pdrop: 0.1
-        attn_pdrop: 0.1
+        block_size: 64
+        n_layer: 6
+        n_head: 4
+        n_embd: 128
+        embd_pdrop: 0.2
+        resid_pdrop: 0.2
+        attn_pdrop: 0.15
 
     permuter:
         class_path: src.modules.permuter.Identity
@@ -60,29 +60,28 @@ model:
 
     # The probability of keeping the original token of the input sequence, 
     # instead of replacing it with the random token, during training.
-    pkeep: 1
+    pkeep: 0.9
     
     # The key in the dataloader batch for the conditioning stage, 
     # may be different from the image key used in the first stage model, 
     # e.g., it can be "label" for class-conditional generation
     cond_stage_dataset_key: image
 
-    base_learning_rate: 4.5e-6
+    base_learning_rate: 1e-6
     weight_decay: 0.0001
 
 data:
-  class_path: src.data.imagenet.ImageNetDataModule
+  class_path: src.data.cifar10.CIFAR10DataModule
   init_args:
-    batch_size: 32
-    num_workers: 24
-    image_size: 256
-    random_crop: False
+    root: ./data/cifar10
+    batch_size: 64
+    num_workers: 4
 
 trainer:
   logger:
     class_path: lightning.pytorch.loggers.tensorboard.TensorBoardLogger
     init_args:
-      save_dir: ./egs/imagenet/cond_transformer
+      save_dir: ./egs/cifar10/latent_transformer
       
   callbacks:
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
@@ -114,7 +113,7 @@ trainer:
 
   max_epochs: 100000
   max_steps: 1000000 # higher priority than max_epochs
-  devices: [2,3,4,5]
+  devices: [6,7]
   accelerator: gpu
   strategy: ddp_find_unused_parameters_false
   precision: 32

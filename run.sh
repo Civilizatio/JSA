@@ -1,53 +1,50 @@
 #!/bin/bash
-# --config configs/jsa/categorical_prior_continuous_cifar10_conv.yaml \
-# --config configs/vq_gan/cifar10.yaml \
-# --config configs/cond_transformer/cifar10.yaml \
 
-# 0. 监控开关 (设置为 true 开启监控，设置为 false 关闭监控)
+# 0. Monitoring switch (set to true to enable monitoring, set to false to disable monitoring)
 ENABLE_MONITOR=true
 
-# 1. 设置日志文件路径
+# 1. Define log file and CUDA devices (you can modify these as needed)
 LOG_FILE="train_output.log"
-MONITOR_PID="" # 初始化为空
-CUDA_DEVICES=0,1,2,3 # 你可以根据需要修改为你想使用的 GPU 设备，例如 "0,1" 或 "0,1,2,3"
+MONITOR_PID="" # Initialize the monitor PID variable, it will be set later if monitoring is enabled
+CUDA_DEVICES=0,1,2,3 # Modify this to specify which GPUs to use (e.g., "0,1" for GPU 0 and 1, or "0" for only GPU 0)
+CONFIG_PATH="configs/jsa/imagenet.yaml" # Modify this to specify the config file for training
 
-# === 新增：信号捕捉（优雅退出） ===
-# 当你按下 Ctrl+C 时，触发 cleanup 函数，把后台进程一起杀掉
+# When the script receives an interrupt signal (e.g., Ctrl+C), it will execute the cleanup function to terminate the training and monitoring processes gracefully.
 cleanup() {
-    echo -e "\n[!] 收到中断信号(Ctrl+C)，正在终止后台进程..."
+    echo -e "\n[!] Received interrupt signal (Ctrl+C), terminating background processes..."
     kill $TRAIN_PID 2>/dev/null
     if [ "$ENABLE_MONITOR" = true ] && [ -n "$MONITOR_PID" ]; then
         kill $MONITOR_PID 2>/dev/null
     fi
-    echo "已成功终止实验及相关的后台进程。"
+    echo "Successfully terminated the experiment and related background processes."
     exit 1
 }
 trap cleanup INT TERM
 # ==================================
 
-# 2. 在后台运行训练脚本，并将输出重定向到日志文件
-PYTHONPATH=. python scripts/train.py fit --config configs/jsa/imagenet.yaml \
+# 2. Training command (you can modify the config path and other parameters as needed)
+PYTHONPATH=. python scripts/train.py fit --config $CONFIG_PATH \
     --trainer.devices $CUDA_DEVICES > "$LOG_FILE" 2>&1 &
 
-# 3. 获取刚刚启动的训练进程的 PID
+# 3. Get the PID of the training process and print it out
 TRAIN_PID=$!
 echo "Training started with PID: $TRAIN_PID. Logging to $LOG_FILE"
-echo "👉 提示：你可以打开新的终端运行 \`tail -f $LOG_FILE\` 来实时查看训练输出！"
+echo "👉 Tip: You can open a new terminal and run \`tail -f $LOG_FILE\` to view the training output in real time!"
 
-# 4. 根据开关决定是否启动监控脚本
+# 4. If monitoring is enabled, start the monitor.py script in the background and print its PID
 if [ "$ENABLE_MONITOR" = true ]; then
     python monitor.py --pid $TRAIN_PID --log "$LOG_FILE" --devices $CUDA_DEVICES &
     MONITOR_PID=$!
-    echo "[监控已开启] Monitor process started with PID: $MONITOR_PID"
+    echo "[Monitoring enabled] Monitor process started with PID: $MONITOR_PID"
 else
-    echo "[监控已关闭] 未启动 monitor.py"
+    echo "[Monitoring disabled] monitor.py not started"
 fi
 
-# 5. 等待训练进程结束
+# 5. Wait for the training process to finish and print a message when it does
 wait $TRAIN_PID
 echo "Training process $TRAIN_PID finished."
 
-# 6. 训练结束后，如果开启了监控则关掉监控程序
+# 6. If monitoring is enabled, kill the monitor process when training is done and print a message
 if [ "$ENABLE_MONITOR" = true ] && [ -n "$MONITOR_PID" ]; then
     kill $MONITOR_PID 2>/dev/null
     echo "Monitor process $MONITOR_PID stopped."
