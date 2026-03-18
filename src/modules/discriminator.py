@@ -1,3 +1,6 @@
+# src/modules/discriminator.py
+""" This module defines the `NLayerDiscriminator` class, which implements a PatchGAN discriminator architecture commonly used in GAN frameworks. The `NLayerDiscriminator` class allows for configurable input channels, number of filters, number of layers, and the option to use ActNorm instead of BatchNorm. This discriminator can be used in various GAN-based models to distinguish between real and generated samples, providing feedback to the generator during training. The implementation is based on the architecture used in the Pix2Pix model and can be easily integrated into existing GAN frameworks.
+"""
 import functools
 import torch.nn as nn
 import torch

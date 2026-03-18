@@ -2,14 +2,11 @@ import torch
 import torch.nn.functional as F
 from lightning.pytorch import LightningModule
 from src.base.base_dataset import JsaDataset
-from src.modules.networks import Encoder, Decoder
 from src.modules.vqvae.vq_adaptor import ConvEncoder, ConvDecoder
 from src.modules.vqvae.quantize import VectorQuantizer2 as VectorQuantizer
 from src.modules.losses.vqperceptual import VQLPIPSWithDiscriminator
 from src.utils.file_logger import get_file_logger
 
-import torch.distributed as dist
-from src.utils.codebook_utils import plot_codebook_usage_distribution
 
 class VQModel(LightningModule):
     def __init__(
@@ -41,8 +38,6 @@ class VQModel(LightningModule):
         self.post_quant_conv = torch.nn.Conv2d(
             self.quantizer.e_dim, self.quantizer.in_channels, kernel_size=1
         )
-
-        
 
         if ckpt_path is not None:
             self.init_from_ckpt(ckpt_path, ignore_keys=ignore_keys)
@@ -87,7 +82,7 @@ class VQModel(LightningModule):
         return dec
 
     def decode_code(self, code_b, shape=None):
-            
+
         if len(code_b.shape) == 3:
             b, h, w = code_b.shape
         elif len(code_b.shape) == 2:
@@ -95,14 +90,20 @@ class VQModel(LightningModule):
             if shape is not None:
                 h, w = shape[0], shape[1]
                 if hw != h * w:
-                    raise ValueError(f"Provided shape {shape} does not match code_b shape {code_b.shape}")
+                    raise ValueError(
+                        f"Provided shape {shape} does not match code_b shape {code_b.shape}"
+                    )
                 shape = (b, h, w, self.quantizer.e_dim)
             else:
-                h = w = int(hw ** 0.5)
+                h = w = int(hw**0.5)
                 if h * w != hw:
-                    raise ValueError(f"Cannot infer square shape from code_b shape {code_b.shape}, please provide shape argument.")
+                    raise ValueError(
+                        f"Cannot infer square shape from code_b shape {code_b.shape}, please provide shape argument."
+                    )
         else:
-            raise ValueError(f"code_b must be of shape [B, H, W] or [B, H*W], but got {code_b.shape}")
+            raise ValueError(
+                f"code_b must be of shape [B, H, W] or [B, H*W], but got {code_b.shape}"
+            )
         shape = (b, h, w, self.quantizer.e_dim)
         quant_b = self.quantizer.get_codebook_entry(code_b, shape=shape)
         dec = self.decode(quant_b)
@@ -182,6 +183,7 @@ class VQModel(LightningModule):
         opt_disc.zero_grad()
         self.manual_backward(discloss)
         opt_disc.step()
+
     def validation_step(self, batch, batch_idx):
         x = self.get_input(batch, self.dataset_key)
         quant, qloss, info = self.encode(x)
@@ -264,10 +266,10 @@ class VQModel(LightningModule):
     # ============================== Utility methods ==============================
     def get_last_layer(self):
         return self.decoder.get_last_layer_weight()
-    
+
     def to_rgb(self, x):
-        """ For segmentation maps with discrete labels, 
-        we can colorize them using a random projection to 3 channels for visualization. 
+        """For segmentation maps with discrete labels,
+        we can colorize them using a random projection to 3 channels for visualization.
         """
         assert self.dataset_key == "segmentation"
         if not hasattr(self, "colorize"):
@@ -312,18 +314,21 @@ class VQModel(LightningModule):
         return self.quantizer.n_e
 
     # ============================== Downstream tasks ==============================
-    
+
     @torch.no_grad()
     def tokenize(self, x, flatten=True):
         """Utility function to tokenize input images into discrete code indices.
 
         Interface for downstream tasks like `src.models.latent_transformer.LatentTransformer`
         """
-        #! We need to turn the `sane_index_shape` in `VectorQuantizer` to True to get the original indices shape [B, H', W'] for the downstream transformer model, 
+        #! We need to turn the `sane_index_shape` in `VectorQuantizer` to True to get the original indices shape [B, H', W'] for the downstream transformer model,
         #! while the default `sane_index_shape=False` returns a flattened indices shape [B*H'*W'] which during training.
-        if hasattr(self.quantizer, "sane_index_shape") and not self.quantizer.sane_index_shape:
+        if (
+            hasattr(self.quantizer, "sane_index_shape")
+            and not self.quantizer.sane_index_shape
+        ):
             self.quantizer.sane_index_shape = True
-            
+
         _, _, info = self.encode(x)
         if flatten:
             # If flatten is True, we return a 2D tensor of shape [B, T] where T = H'*W'
@@ -339,7 +344,11 @@ class VQModel(LightningModule):
         """
         return self.decode_code(indices, shape=shape)
 
-class VQNoDiscModel(VQModel):
+
+# // This is a variant of VQModel without discriminator, for ablation study to see the effect of adversarial loss.
+# // However, we can set the weight of adversarial loss to 0 in the original VQModel to achieve the same effect, so this class is not strictly necessary.
+import warnings
+class _VQNoDiscModel(VQModel):
     def __init__(
         self,
         encoder,
@@ -352,6 +361,11 @@ class VQNoDiscModel(VQModel):
         colorize_nlabels=None,
         monitor=None,
     ):
+        warnings.warn(
+            "Using _VQNoDiscModel which does not have a discriminator. This is for ablation study only, consider setting adversarial loss weight to 0 in the original VQModel instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         super().__init__(
             encoder=encoder,
             decoder=decoder,

@@ -1,11 +1,11 @@
 # src/models/components/proposal_model.py
 import torch
 import torch.nn as nn
-
 from src.base.base_jsa_modules import BaseProposalModel
+import warnings
 
-
-class ProposalModelBernoulli(BaseProposalModel):
+# // Remove Bernoulli proposal model and use Categorical proposal model instead, as Bernoulli proposal is too limited for complex datasets like ImageNet, even with a powerful network. We keep it here for reference and potential future use on simpler datasets.
+class _ProposalModelBernoulli(BaseProposalModel):
     """q_phi(h|x)
 
     Must implement functions:
@@ -20,6 +20,11 @@ class ProposalModelBernoulli(BaseProposalModel):
         net: nn.Module = None,
         num_latent_vars=256,
     ):
+        warnings.warn(
+            "The _ProposalModelBernoulli model is deprecated and will be removed in a future version.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         super().__init__()
 
         self.num_latent_vars = num_latent_vars

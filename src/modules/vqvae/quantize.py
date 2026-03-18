@@ -1,5 +1,8 @@
 # src/modules/vqvae/quantize.py
-# Vector Quantization modules for VQ-VAE
+""" This module defines the `VectorQuantizer`, `GumbelQuantize`, `VectorQuantizer2`, and `EMAVectorQuantizer` classes, which implement different quantization techniques for use in VQ-VAE models. The `VectorQuantizer` class implements the original VQ-VAE quantization method, while the `GumbelQuantize` class implements the Gumbel-Softmax trick for differentiable quantization. The `VectorQuantizer2` class is an improved version of the original `VectorQuantizer`, addressing a bug in the loss calculation and improving efficiency. The `EMAVectorQuantizer` class implements an exponential moving average (EMA) version of vector quantization, which can help stabilize training. These classes can be used as components in VQ-VAE models to discretize latent representations and improve the quality of generated images.
+
+NOTE: We only use VectorQuantizer2 in our VQ-VAE experiments, while the other quantizers are not used. We keep them here just because VQ-VAE uses them. And they will not be used in JSA.
+"""
 
 import torch
 import torch.nn as nn

@@ -1,5 +1,5 @@
 # src/models/latent_transformer.py
-"""This module defines the LatentTransformer model, which is a transformer-based architecture designed for processing latent representations of images.
+""" This module defines the LatentTransformer model, which is a transformer-based architecture designed for processing latent representations of images.
 The model consists of an encoder that maps input images to a latent space, and a transformer that operates on the latent representations to capture complex dependencies.
 The module also includes utilities for training and evaluating the model, as well as for visualizing the learned latent space.
 

@@ -1,4 +1,6 @@
 # src/samplers/misampler.py
+""" This module implements the `MISampler` class, which is a Metropolis Independence Sampler (MIS) for sampling latent variables in the JSA framework. The `MISampler` class includes methods for performing single sampling steps, multi-step sampling, and parallelized sampling. It also incorporates a cache mechanism to store and retrieve latent variables for each data point, which can improve sampling efficiency. The acceptance probability for the MIS step is calculated based on the joint model and proposal model, and the sampler keeps track of acceptance statistics for monitoring training progress. Additionally, the module includes functionality for synchronizing the cache across distributed training processes.
+"""
 import torch
 from src.base.base_sampler import BaseSampler
 import torch.distributed as dist

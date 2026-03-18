@@ -1,5 +1,17 @@
 # src/modules/networks.py
-# Define some network components here for proposal and joint models
+""" This module defines a collection of neural network components and architectures that can be used in various models within the JSA framework. The main components include:
+- `MLPNetwork`: A simple multi-layer perceptron (MLP) network that
+  can be used for various tasks such as encoding, decoding, or as a component in more complex models.
+- `Normalize`: A normalization layer that supports group normalization, batch normalization, instance normalization, or no normalization, based on the specified type.
+- `Upsample`: An upsampling layer that can be used to increase the spatial resolution of feature maps, with an option to include a convolutional layer after upsampling.
+- `Downsample`: A downsampling layer that can be used to decrease the spatial resolution of feature maps, with an option to include a convolutional layer for learnable downsampling.
+- `ResnetBlock`: A residual block that includes normalization, activation, and convolutional layers
+  with an optional shortcut connection, which can be used in various architectures such as ResNets or U-Nets.
+  - `AttnBlock`: An attention block that implements self-attention mechanism, allowing the model to capture long-range dependencies in feature maps.
+  - `Encoder`: A convolutional encoder architecture that can be used to encode images or other spatial data into a latent representation, with support for residual blocks, attention blocks, and configurable normalization and activation functions.
+  - `Decoder`: A convolutional decoder architecture that can be used to decode latent representations back into the original data space, with support for residual blocks, attention blocks, and configurable normalization and activation functions.
+  These components can be used individually or combined to build more complex models such as VQ-VAEs, GANs, or other generative models within the JSA framework
+"""
 
 import torch
 import torch.nn as nn

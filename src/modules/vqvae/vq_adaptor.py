@@ -1,4 +1,10 @@
 # src/modules/vqvae/vq_adaptor.py
+""" The `vq_adaptor` module provides a set of classes that serve as adaptors for the VQ-VAE framework, allowing users to easily integrate their custom encoder and decoder networks into the VQ-VAE training loop. The main classes in this module include:
+- `MLPEncoder`: An adaptor for multi-layer perceptron (MLP) encoders, which can be used to encode input data into a latent representation suitable for the VQ-VAE framework.
+- `MLPDecoder`: An adaptor for multi-layer perceptron (MLP) decoders, which can be used to decode latent representations back into the original data space.
+- `ConvEncoder`: An adaptor for convolutional encoders, which can be used to encode images or other spatial data into a latent representation suitable for the VQ-VAE framework.
+- `ConvDecoder`: An adaptor for convolutional decoders, which can be used to decode latent representations back into the
+"""
 
 import torch
 from torch import nn

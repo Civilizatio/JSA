@@ -1,5 +1,9 @@
 # src/models/components/losses.py
-# from taming-transformers
+""" This module defines the `JSAGANLoss` class, which implements a simplified GAN loss for the JSA framework. The `JSAGANLoss` class includes a discriminator network, supports both Hinge and Vanilla GAN losses, and incorporates an adaptive weighting mechanism for the generator's adversarial loss based on the training progress. This module is designed to be integrated into the JSA training loop, allowing for joint optimization of the generative model and the discriminator. The implementation includes methods for calculating the discriminator loss, generator adversarial loss, and adaptive weight based on the gradients of the losses. Additionally, it provides logging of key metrics for monitoring training progress.
+
+Note: This module is currently not used in the JSA framework and may be modified to fit an Energy-Based Model (EBM) framework instead of a GAN framework in the future.
+"""
+
 
 import torch
 import torch.nn as nn

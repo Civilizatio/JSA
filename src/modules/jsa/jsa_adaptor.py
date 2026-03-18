@@ -1,5 +1,12 @@
 # src/modules/jsa/jsa_adaptor.py
-# For JSA model: MLP encoder and decoder
+""" The `jsa_adaptor` module provides a set of classes that serve as adaptors for the JSA framework, allowing users to easily integrate their custom encoder and decoder networks into the JSA training loop. The main classes in this module include:
+- `MLPEncoder`: An adaptor for multi-layer perceptron (MLP) encoders, which can be used to encode input data into a latent representation suitable for the JSA framework.
+- `MLPDecoder`: An adaptor for multi-layer perceptron (MLP) decoders, which can be used to decode latent representations back into the original data space.
+- `ConvEncoder`: An adaptor for convolutional encoders, which can be used to encode images or other spatial data into a latent representation suitable for the JSA framework.
+- `ConvDecoder`: An adaptor for convolutional decoders, which can be used to decode latent representations back into the original image space.
+"""
+
+
 from torch import nn
 from src.modules.networks import MLPNetwork
 import torch

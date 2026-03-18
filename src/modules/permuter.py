@@ -1,5 +1,5 @@
 # src/modules/permuter.py
-"""This module defines various permutation strategies for rearranging the order of pixels in an image.
+""" This module defines various permutation strategies for rearranging the order of pixels in an image.
 Each permutation is implemented as a subclass of AbstractPermuter, which defines a common interface for forward and reverse transformations.
 The module also includes a visualization utility to plot the scan paths of different permuters.
 """

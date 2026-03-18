@@ -1,23 +1,21 @@
 # src/models/jsa.py
+""" This module defines the `JSA` class, which implements the Joint Stochastic Approximation (JSA) framework for training generative models. The `JSA` class inherits from `LightningModule`, making it compatible with PyTorch Lightning for streamlined training and evaluation.
+"""
+
 import torch
 from lightning.pytorch import LightningModule
 from hydra.utils import instantiate
-import torchvision
 import torch.distributed as dist
 from typing import Any
+import math
 
 from src.samplers.misampler import MISampler
 from src.base.base_jsa_modules import BaseJointModel, BaseProposalModel
 from src.base.base_dataset import JsaDataset
-from src.utils.codebook_utils import (
-    encode_multidim_to_index,
-    plot_codebook_usage_distribution,
-)
+from src.utils.codebook_utils import encode_multidim_to_index
 from src.utils.schedulers import SigmaScheduler
 from src.utils.file_logger import get_file_logger
-
 from src.modules.losses.jsa_gan import JSAGANLoss
-import math
 
 
 class JSA(LightningModule):
@@ -35,7 +33,7 @@ class JSA(LightningModule):
         init_from_ckpt: str = None,
         init_mode: str = "resume",  # "resume" or "warm_start"
         init_strict: bool = False,
-        sigma_scheduler:SigmaScheduler=None,
+        sigma_scheduler: SigmaScheduler = None,
         global_only_steps: int = 10000,
         block_strategy_prob: float = 0.5,
     ):
@@ -201,7 +199,10 @@ class JSA(LightningModule):
         self.train_logger.info(self.proposal_model.net)
 
         # set sigma for joint model if applicable
-        if self.sigma_scheduler is not None and getattr(self.joint_model, "sigma_mode", None) == "scheduled":
+        if (
+            self.sigma_scheduler is not None
+            and getattr(self.joint_model, "sigma_mode", None) == "scheduled"
+        ):
             init_sigma = self.sigma_scheduler.get_sigma(0)
             if hasattr(self.joint_model, "set_sigma"):
                 self.joint_model.set_sigma(init_sigma)
@@ -218,7 +219,6 @@ class JSA(LightningModule):
                 )
         else:
             self.sampler.use_cache = False
-            
 
         # Reset acceptance stats
         self.sampler.reset_acceptance_stats()
@@ -315,16 +315,17 @@ class JSA(LightningModule):
         if hasattr(self.joint_model, "sigma") and self.joint_model.sigma is not None:
             self.log("train/joint_model_sigma", self.joint_model.sigma, prog_bar=True)
 
-        if self.sigma_scheduler is not None and getattr(self.joint_model, "sigma_mode", None) == "scheduled":
+        if (
+            self.sigma_scheduler is not None
+            and getattr(self.joint_model, "sigma_mode", None) == "scheduled"
+        ):
 
             new_sigma = self.sigma_scheduler.get_sigma(
                 step=self.global_step,
             )
             if hasattr(self.joint_model, "set_sigma"):
                 self.joint_model.set_sigma(new_sigma)
-                
-    
-       
+
     # ========================= Validation =========================
 
     def validation_step(self, batch, batch_idx):
@@ -403,9 +404,7 @@ class JSA(LightningModule):
         Interface for `src.utils.callbacks.codebook_stats_callback.CodebookStats`
         """
         x = self.get_input(batch, JsaDataset.IMAGE_KEY)
-        h = self.proposal_model.encode(
-            x, flatten=True
-        )  # [B*H*W*num_latent_vars, 1]
+        h = self.proposal_model.encode(x, flatten=True)  # [B*H*W*num_latent_vars, 1]
         indices = encode_multidim_to_index(
             h, self.proposal_model.num_categories
         )  # [B*H*W*num_latent_vars, ]
@@ -428,24 +427,24 @@ class JSA(LightningModule):
         Args:
             x: input images [B, C, H, W]
             flatten: whether to flatten spatial dimensions and return shape [B, H*W] or keep spatial dimensions and return shape [B, H, W]
-        Returns:  
+        Returns:
             If flatten=True: [B, H*W] where each element is the discrete token index for that spatial location.
-            If flatten=False: [B, H, W] where each element is the discrete token index for that spatial location.       
-         
+            If flatten=False: [B, H, W] where each element is the discrete token index for that spatial location.
+
         """
         assert (
             self.proposal_model.num_latent_vars == 1
         ), "Tokenization currently only supported for single latent variable per spatial location."
 
         indices = self.proposal_model.encode(x)  # [B, H, W, 1]
-        if flatten: # return shape [B, H*W]
+        if flatten:  # return shape [B, H*W]
             indices = indices.squeeze(-1)  # [B, H, W]
             indices = indices.view(indices.shape[0], -1)  # [B, H*W]
-            
-        else: # return shape [B, H, W]
+
+        else:  # return shape [B, H, W]
             indices = indices.squeeze(-1)
-        return indices.long() # ensure long dtype for discrete token indices
-    
+        return indices.long()  # ensure long dtype for discrete token indices
+
     @torch.no_grad()
     def detokenize(self, indices, shape=None):
         """Utility function to decode discrete token indices back to continuous latent representations.
@@ -453,34 +452,41 @@ class JSA(LightningModule):
         Interface for potential downstream tasks that require decoding from discrete tokens.
         Args:
             indices: [B, H, W] or [B*H*W*num_latent_vars] depending on flatten
-            shape: tuple specifying the desired output shape (e.g., (H, W)) if indices is flattened. 
+            shape: tuple specifying the desired output shape (e.g., (H, W)) if indices is flattened.
                     If None, assumes indices is already in the correct shape.
-         
+
         """
         assert (
             self.proposal_model.num_latent_vars == 1
         ), "Detokenization currently only supported for single latent variable per spatial location."
-        
-        indices = indices.long() # ensure long dtype for embedding lookup
-        
-        if indices.dim() == 3: # [B, H, W]
+
+        indices = indices.long()  # ensure long dtype for embedding lookup
+
+        if indices.dim() == 3:  # [B, H, W]
             indices = indices.unsqueeze(-1)  # [B, H, W, 1]
             return self.decode(indices)  # [B, C, H, W]
-        
-        elif indices.dim() == 2: # [B, H*W]
+
+        elif indices.dim() == 2:  # [B, H*W]
             B, HW = indices.shape
             if shape is not None:
                 H, W = shape[0], shape[1]
                 if HW != H * W:
-                    raise ValueError(f"Provided shape {shape} does not match the number of tokens in indices {indices.shape}")
+                    raise ValueError(
+                        f"Provided shape {shape} does not match the number of tokens in indices {indices.shape}"
+                    )
             else:
-                H = W = int(HW**0.5)  # assume square spatial dimensions if shape not provided
+                H = W = int(
+                    HW**0.5
+                )  # assume square spatial dimensions if shape not provided
                 if H * W != HW:
-                    raise ValueError(f"Cannot infer square spatial dimensions from indices shape {indices.shape}. Please provide explicit shape.")
-            indices = indices.view(B, H, W)  # [B, H, W] 
+                    raise ValueError(
+                        f"Cannot infer square spatial dimensions from indices shape {indices.shape}. Please provide explicit shape."
+                    )
+            indices = indices.view(B, H, W)  # [B, H, W]
             indices = indices.unsqueeze(-1)  # [B, H, W, 1]
             x = self.decode(indices)  # [B, C, H, W]
             return x
         else:
-            raise ValueError(f"Unsupported indices shape {indices.shape} for detokenization. Expected [B, H, W] or [B, H*W].")
-        
+            raise ValueError(
+                f"Unsupported indices shape {indices.shape} for detokenization. Expected [B, H, W] or [B, H*W]."
+            )

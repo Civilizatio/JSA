@@ -12,3 +12,5 @@ egs/
 egs
 
 test.py
+
+*.log

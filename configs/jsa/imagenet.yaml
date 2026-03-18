@@ -67,12 +67,12 @@ model:
     base_lr_proposal: 4.5e-07
     base_lr_discriminator: 1.86e-07
     num_mis_steps: 20
-    cache_start_epoch: 0 # epoch to start using cache
+    cache_start_epoch: 1 # epoch to start using cache
     global_only_steps: 1500000000
     block_strategy_prob: 0.0 # if =0, always use global strategy; if =1, always use block strategy; if in between, use block strategy with this probability
 
     init_from_ckpt: null
-    init_mode: resume # "resume" or "warm_start"
+    init_mode: resume # "resume" or "warm_start", if "resume", will load optimizer state and resume training; if "warm_start", will only load model weights and randomly initialize optimizer state
     init_strict: false
 
     # sigma_=controller: null # if null, sigma will be learned as a parameter; otherwise, it will be controlled by the specified scheduler
@@ -160,7 +160,7 @@ trainer:
   strategy: ddp_find_unused_parameters_true
   # strategy: auto
   precision: 32
-  enable_progress_bar: true
+  enable_progress_bar: false # set to false to speed up training, since tqdm can be slow when logging a lot
   log_every_n_steps: 25
   val_check_interval: 5000 # check validation every 5000 training steps
   limit_val_batches: 200 # only use 100 batches for validation to speed up validation

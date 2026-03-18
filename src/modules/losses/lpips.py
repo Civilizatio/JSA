@@ -1,4 +1,8 @@
-"""Stripped version of https://github.com/richzhang/PerceptualSimilarity/tree/master/models"""
+# src/modules/losses/lpips.py
+""" Stripped version of https://github.com/richzhang/PerceptualSimilarity/tree/master/models
+
+And we haven't used it in JSA yet, while it is only used in the VQ-VAE experiments, so we keep it here for potential future use in JSA, and also for reference for implementing perceptual losses in the Perceptual JSA model in the future.
+"""
 
 import torch
 import torch.nn as nn

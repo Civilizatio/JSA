@@ -1,3 +1,7 @@
+# src/modules/losses/vqperceptual.py
+""" This module implements the `VQLPIPSWithDiscriminator` loss function, which combines
+the VQ-VAE codebook loss, pixel-wise reconstruction loss, perceptual loss (LPIPS), and an adversarial loss from a discriminator. This loss function is designed to improve the quality of reconstructions in VQ-VAE models by incorporating perceptual features and adversarial training. The `VQLPIPSWithDiscriminator` class includes methods for calculating the combined loss, as well as adaptive weighting for the adversarial component based on the training progress. This module can be used in training VQ-VAE models to achieve better visual fidelity in the generated images.
+"""
 import torch
 import torch.nn as nn
 import torch.nn.functional as F

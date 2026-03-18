@@ -1,51 +1,110 @@
 #!/bin/bash
 
-# 0. Monitoring switch (set to true to enable monitoring, set to false to disable monitoring)
-ENABLE_MONITOR=true
 
-# 1. Define log file and CUDA devices (you can modify these as needed)
-LOG_FILE="train_output.log"
-MONITOR_PID="" # Initialize the monitor PID variable, it will be set later if monitoring is enabled
-CUDA_DEVICES=0,1,2,3 # Modify this to specify which GPUs to use (e.g., "0,1" for GPU 0 and 1, or "0" for only GPU 0)
-CONFIG_PATH="configs/jsa/imagenet.yaml" # Modify this to specify the config file for training
+# Parameters (Can be customized)
+ENABLE_MONITOR=true # true to enable resource monitor, false to disable
+LOG_FILE="train_output.log" # redirect all output to this log file
+CUDA_DEVICES=2,3,4,5 # CUDA_DEVICES=0,1,2,3 # Example for 4 GPUs
+CONFIG_PATH="configs/jsa/imagenet.yaml"
 
-# When the script receives an interrupt signal (e.g., Ctrl+C), it will execute the cleanup function to terminate the training and monitoring processes gracefully.
+
+
+# Process IDs
+# Will be set after starting the training and monitor processes
+TRAIN_PID=""
+MONITOR_PID=""
+
+############################################
+#  Cleanup function 
+############################################
 cleanup() {
-    echo -e "\n[!] Received interrupt signal (Ctrl+C), terminating background processes..."
-    kill $TRAIN_PID 2>/dev/null
-    if [ "$ENABLE_MONITOR" = true ] && [ -n "$MONITOR_PID" ]; then
-        kill $MONITOR_PID 2>/dev/null
+    echo -e "\n[!] Received termination signal, cleaning up..."
+
+    if [ -n "$TRAIN_PID" ]; then
+        echo "[+] Terminating training process group (PGID=$TRAIN_PID)..."
+
+        # Kill the entire process group to ensure all child processes are terminated
+        kill -TERM -$TRAIN_PID 2>/dev/null
+
+        # Wait a moment for graceful shutdown
+        sleep 5
+
+        # Force kill if still alive
+        kill -KILL -$TRAIN_PID 2>/dev/null
     fi
-    echo "Successfully terminated the experiment and related background processes."
-    exit 1
+
+    if [ "$ENABLE_MONITOR" = true ] && [ -n "$MONITOR_PID" ]; then
+        echo "[+] Terminating monitor process..."
+        kill -TERM $MONITOR_PID 2>/dev/null
+    fi
+
+    echo "[✓] Cleanup completed"
 }
-trap cleanup INT TERM
-# ==================================
 
-# 2. Training command (you can modify the config path and other parameters as needed)
-PYTHONPATH=. python scripts/train.py fit --config $CONFIG_PATH \
-    --trainer.devices $CUDA_DEVICES > "$LOG_FILE" 2>&1 &
+# Set trap to catch termination signals and call cleanup
+trap cleanup INT TERM EXIT
 
-# 3. Get the PID of the training process and print it out
+############################################
+# Start training in NEW SESSION
+############################################
+
+echo "[+] Starting training..."
+
+setsid env PYTHONPATH=. python scripts/train.py fit \
+    --config $CONFIG_PATH \
+    --trainer.devices $CUDA_DEVICES \
+    > "$LOG_FILE" 2>&1 &
+
 TRAIN_PID=$!
-echo "Training started with PID: $TRAIN_PID. Logging to $LOG_FILE"
-echo "👉 Tip: You can open a new terminal and run \`tail -f $LOG_FILE\` to view the training output in real time!"
 
-# 4. If monitoring is enabled, start the monitor.py script in the background and print its PID
+echo "[✓] Training started"
+echo "    PID : $TRAIN_PID"
+echo "    LOG : $LOG_FILE"
+echo "    tail -f $LOG_FILE to view logs"
+
+############################################
+# 🔍 Start monitor (optional)
+############################################
+
 if [ "$ENABLE_MONITOR" = true ]; then
-    python scripts/monitor.py --pid $TRAIN_PID --log "$LOG_FILE" --devices $CUDA_DEVICES &
+    python scripts/monitor.py \
+        --pid $TRAIN_PID \
+        --log "$LOG_FILE" \
+        --devices $CUDA_DEVICES &
+
     MONITOR_PID=$!
-    echo "[Monitoring enabled] Monitor process started with PID: $MONITOR_PID"
+    echo "[✓] Monitor started (PID=$MONITOR_PID)"
 else
-    echo "[Monitoring disabled] monitor.py not started"
+    echo "[i] Monitor disabled"
 fi
 
-# 5. Wait for the training process to finish and print a message when it does
-wait $TRAIN_PID
-echo "Training process $TRAIN_PID finished."
+############################################
+#  Wait for training
+############################################
 
-# 6. If monitoring is enabled, kill the monitor process when training is done and print a message
+wait $TRAIN_PID
+EXIT_CODE=$?
+
+echo "[+] Training process exited (code=$EXIT_CODE)"
+
+############################################
+#  Stop monitor if still alive
+############################################
+
 if [ "$ENABLE_MONITOR" = true ] && [ -n "$MONITOR_PID" ]; then
     kill $MONITOR_PID 2>/dev/null
-    echo "Monitor process $MONITOR_PID stopped."
+fi
+
+############################################
+#  Report result
+############################################
+
+if [ $EXIT_CODE -ne 0 ]; then
+    echo -e "\n[❌ ERROR] Training failed (Exit Code: $EXIT_CODE)"
+    echo "Last 20 lines of log:"
+    echo "----------------------------------------"
+    tail -n 20 "$LOG_FILE"
+    echo "----------------------------------------"
+else
+    echo -e "\n[✅ SUCCESS] Training completed successfully"
 fi
