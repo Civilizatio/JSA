@@ -2,9 +2,6 @@
 import torch
 import math
 from typing import List, Union
-import numpy as np
-import matplotlib.pyplot as plt
-import torchvision
 
 
 def compute_category_weights(
@@ -104,6 +101,9 @@ def decode_index_to_multidim(
     return out  # [B, K]
 
 def save_images_grid(images, save_path, nrow=None):
+    import numpy as np
+    import torchvision
+
     # images: [B, C, H, W] in range [-1, 1]
     # Denormalize to [0, 1]
    
@@ -142,6 +142,9 @@ def save_images_grid_(
     Returns:
         A dictionary of {name: fig} where `name` is the tag and `fig` is the matplotlib figure.
     """
+    import numpy as np
+    import matplotlib.pyplot as plt
+
     num_images = len(images)
     if num_images == 0:
         return {}
@@ -227,6 +230,9 @@ def plot_codebook_usage_distribution(
     Returns:
         A tuple (figures, entropy)
     """
+    import numpy as np
+    import matplotlib.pyplot as plt
+
     # Calculate utilization internally
     used_codewords = np.sum(codebook_counter > 0)
     

@@ -1,3 +1,4 @@
+# A Typical YAML configuration file for training a JSA model on CIFAR-10 dataset. This configuration includes settings for the trainer, model architecture, data loading, and optimization. The trainer is set up to use GPU acceleration with distributed data parallel (DDP) strategy, and it includes callbacks for checkpointing, learning rate monitoring, and gradient norm logging. The model consists of a joint model with a convolutional decoder and a proposal model with a convolutional encoder. The data module is configured to load the CIFAR-10 dataset with specified batch size and number of workers. The optimizer and learning rate scheduler are not specified in this configuration, and the path to the checkpoint for resuming training is provided.
 # lightning.pytorch==2.5.6
 seed_everything: 42
 trainer:

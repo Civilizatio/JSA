@@ -108,19 +108,4 @@ $$
 对 PyTorch `Dataset` 进行了一层抽象封装，为了支持缓存系统：
 - 每一次调用 `__getitem__(index)`，除了返回原始的数据和标签内容外，**必须一并返回对应的全局数据索引 `index`**。这使得 Lightning 能够追踪批次数据在全局 Cache 中所对应的旧隐变量，维持正常的 MCMC 更新。
 
-## JSA + Perceptual Loss
 
-上面是最基本的 JSA 框架，后续需要引入 Perceptual Loss 来提升生成质量，因此我们需要在原始的 JSA 上面封装。
-
-主要改变的模块有：
-
-- `PerceptualJSA`：继承自 `JSA`，需要新加入三个阶段的训练过程，切换的逻辑。以及实现对能量函数的更新计算。
-- `PerceptualJointModel`：原来的 `JointModel` 默认为高斯的似然计算。现在需要改为支持 Perceptual Loss 的计算，可以修改逻辑，设置不同的方法，计算不同的重建损失。
-
-需要引入对 `h` 先验建模的 transformer 网络。
-
-则 `JointModel` 里面的结构需要改变一下，需要两个网络，一个计算 distortion，一个计算 prior。然后在 `get_loss` 的时候根据当前的训练阶段，计算不同的损失。
-> 原来的 `JointModel` 主要是高斯假设，分为似然加上均匀先验。现在我们无法得到似然，就需要修改设计，最后只要求得到联合的能量。
-
-
-> 后续需要考虑，用不用额外定义一个计算损失的模块，还是就让 `JointModel` 来计算损失。
