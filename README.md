@@ -19,7 +19,7 @@ pip install -r requirements.txt
 代码的具体框架和接口可见 [structure.md](./docs/structure.md)。
 
 
-## Running MNIST Experiments
+## Running Experiments
 
 > 需要的环境变量可以定义在 `.env` 文件中，例如可以定义 `PYTHONPATH=.`。则运行下面指令时可以不需要前面加 `PYTHONPATH=.`。
 
@@ -68,9 +68,39 @@ tensorboard --logdir=egs/imagenet/latent_transformer --port 6023
 ```
 
 ``` bash
-tensorboard --logdir=egs/imagenet/jsa --port=6024
+tensorboard --logdir=egs/imagenet/jsa/lightning_logs/2026-03-18_16-29-57 --port=6024
 ```
 tensorboard --logdir=egs/continuous_mnist/categorical_prior_conv/base_version --port=6010
+
+## Running Perceptual Version
+
+后面新增了一个基于感知损失的版本，其原理可以参考 [jsa_perceptual_loss.md](./docs/jsa_perceptual_loss.md)。分为三个阶段。
+
+### Stage 1: Train the decoder
+
+```bash
+PYTHONPATH=. python scripts/train.py fit \
+  --config configs/perceptual_jsa/jsa_base.yaml \
+  --config configs/perceptual_jsa/jsa_stage_1.yaml
+```
+
+### Stage 2: Train the prior with the decoder fixed
+
+```bash
+PYTHONPATH=. python scripts/train.py fit \
+  --config configs/perceptual_jsa/jsa_base.yaml \
+  --config configs/perceptual_jsa/jsa_stage_2.yaml \
+  --model.init_args.init_from_ckpt=/path/to/stage1.ckpt
+```
+
+### Stage 3: Jointly fine-tune the prior and decoder
+
+```bash
+PYTHONPATH=. python scripts/train.py fit \
+  --config configs/perceptual_jsa/jsa_base.yaml \
+  --config configs/perceptual_jsa/jsa_stage_3.yaml \
+  --model.init_args.init_from_ckpt=/path/to/stage2.ckpt
+```
 
 ## Future development
 

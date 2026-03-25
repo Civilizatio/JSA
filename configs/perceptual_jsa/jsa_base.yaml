@@ -49,23 +49,23 @@ model:
                   loss_type: l1
                   weight: 1.0
                   reduction: mean
-            perceptual_terms: []
+            # perceptual_terms: []
             # Example perceptual term (uncomment after ensuring the torchvision weights are available locally):
-            # perceptual_terms:
-            #   - class_path: src.modules.losses.perceptual_distortion.FeaturePerceptualLoss
-            #     init_args:
-            #       loss_type: l2
-            #       weight: 0.1
-            #       reduction: mean
-            #       feature_extractor:
-            #         class_path: src.modules.losses.perceptual_distortion.TorchvisionFeatureExtractor
-            #         init_args:
-            #           backbone: vgg16
-            #           return_nodes: [features.3, features.8, features.15]
-            #           weights: DEFAULT
-            #           resize_to: 224
-            #           input_range: neg_one_to_one
-            #           normalize: imagenet
+            perceptual_terms:
+              - class_path: src.modules.losses.perceptual_distortion.FeaturePerceptualLoss
+                init_args:
+                  loss_type: l2
+                  weight: 0.1
+                  reduction: mean
+                  feature_extractor:
+                    class_path: src.modules.losses.perceptual_distortion.TorchvisionFeatureExtractor
+                    init_args:
+                      backbone: vgg16
+                      return_nodes: [features.3, features.8, features.15]
+                      weights: DEFAULT
+                      resize_to: 224
+                      input_range: neg_one_to_one
+                      normalize: imagenet
         prior_model:
           class_path: src.modules.jsa.prior_model.GPTPriorEnergy
           init_args:

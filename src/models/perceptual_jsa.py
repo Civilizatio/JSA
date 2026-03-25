@@ -19,12 +19,16 @@ from __future__ import annotations
 from typing import Any, Dict, Optional, Sequence
 
 import torch
-from src.utils.instantiate_utils import instantiate
+import dataclasses
+
 
 from src.base.base_dataset import JsaDataset
 from src.base.base_sampler import BaseSampler
 from src.models.jsa import JSA
+from src.modules.jsa.joint_model import EnergyOutput, JointLossOutput
+from src.modules.jsa.prior_model import PriorAnalysisOutput
 from src.utils.file_logger import get_file_logger
+from src.utils.instantiate_utils import instantiate
 from src.utils.perceptual_stage import PerceptualTrainingStage
 
 
@@ -382,7 +386,7 @@ class PerceptualJSA(JSA):
         if stage == PerceptualTrainingStage.DECODER_PRETRAIN:
             opt_dist = optimizers["distortion"]
             opt_dist.zero_grad()
-            loss_joint_out = self.joint_model.get_loss(
+            loss_joint_out:JointLossOutput = self.joint_model.get_loss(
                 x,
                 h_pos,
                 stage=stage,
@@ -513,10 +517,11 @@ class PerceptualJSA(JSA):
         recon_l1 = torch.nn.functional.l1_loss(x_rec, x, reduction="mean")
         recon_mse = torch.nn.functional.mse_loss(x_rec, x, reduction="mean")
 
-        pos_energy_all, components = self.joint_model.energy_multiple_samples(
-            x, h, stage=stage, return_components=True
+        output: EnergyOutput = self.joint_model.energy_multiple_samples(
+            x, h, stage=stage
         )
-        pos_energy = pos_energy_all.mean()
+        pos_energy = output.energy.mean()
+        components = output.components
 
         self.log("valid/positive_energy", pos_energy, prog_bar=True, sync_dist=True)
         self.log("valid/recon_l1", recon_l1, prog_bar=True, sync_dist=True)
@@ -525,8 +530,9 @@ class PerceptualJSA(JSA):
             self.log(f"valid/{key}", value.mean(), prog_bar=False, sync_dist=True)
 
         if hasattr(self.joint_model.prior_model, "analyze"):
-            prior_stats = self.joint_model.prior_model.analyze(h_last)
-            for key, value in prior_stats.items():
+            prior_stats: PriorAnalysisOutput = self.joint_model.prior_model.analyze(h_last)
+            
+            for key, value in dataclasses.asdict(prior_stats).items():
                 self.log(f"valid/{key}", value, prog_bar=False, sync_dist=True)
 
     # ------------------------------------------------------------------
