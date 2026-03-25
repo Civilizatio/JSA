@@ -1,0 +1,215 @@
+seed_everything: 42
+
+# Common Perceptual-JSA configuration.
+# Recommended usage:
+#   python scripts/train.py fit \
+#     --config configs/perceptual_jsa/jsa_base.yaml \
+#     --config configs/perceptual_jsa/jsa_stage_1.yaml
+#
+# Stage 2 / Stage 3 can be launched by swapping the second config file.
+# When continuing from a previous stage, provide the checkpoint path from CLI, e.g.:
+#   --model.init_args.init_from_ckpt=/path/to/last.ckpt
+
+model:
+  class_path: src.models.perceptual_jsa.PerceptualJSA
+  init_args:
+    joint_model:
+      class_path: src.modules.jsa.joint_model.JointModelCategoricalEnergy
+      init_args:
+        distortion_weight: 1.0
+        prior_weight: 1.0
+        sample_chunk_size: 4
+        default_stage: full_ebm
+        distortion_model:
+          class_path: src.modules.losses.perceptual_distortion.ReconstructionDistortionModel
+          init_args:
+            clamp_output: [-1.0, 1.0]
+            decoder:
+              class_path: src.modules.jsa.jsa_adaptor.ConvDecoder
+              init_args:
+                num_categories: [1024]
+                num_latent_vars: 1
+                embedding_dims: [256]
+                final_activation: tanh
+                ch: 64
+                out_ch: 3
+                ch_mult: [1, 2, 4]
+                num_res_blocks: 2
+                attn_resolutions: []
+                activation: swish
+                norm_type: group
+                dropout: 0.0
+                resamp_with_conv: true
+                in_channels: null
+                resolution: 32
+                z_channels: 256
+            pixel_terms:
+              - class_path: src.modules.losses.perceptual_distortion.PixelLossTerm
+                init_args:
+                  loss_type: l1
+                  weight: 1.0
+                  reduction: mean
+            perceptual_terms: []
+            # Example perceptual term (uncomment after ensuring the torchvision weights are available locally):
+            # perceptual_terms:
+            #   - class_path: src.modules.losses.perceptual_distortion.FeaturePerceptualLoss
+            #     init_args:
+            #       loss_type: l2
+            #       weight: 0.1
+            #       reduction: mean
+            #       feature_extractor:
+            #         class_path: src.modules.losses.perceptual_distortion.TorchvisionFeatureExtractor
+            #         init_args:
+            #           backbone: vgg16
+            #           return_nodes: [features.3, features.8, features.15]
+            #           weights: DEFAULT
+            #           resize_to: 224
+            #           input_range: neg_one_to_one
+            #           normalize: imagenet
+        prior_model:
+          class_path: src.modules.jsa.prior_model.GPTPriorEnergy
+          init_args:
+            num_categories: [1024]
+            num_latent_vars: 1
+            flatten_order: raster
+            reduction: mean
+            net:
+              class_path: src.modules.gpts.mingpt.GPT
+              init_args:
+                vocab_size: 1025
+                block_size: 64
+                n_layer: 6
+                n_head: 4
+                n_embd: 128
+                embd_pdrop: 0.1
+                resid_pdrop: 0.1
+                attn_pdrop: 0.1
+    proposal_model:
+      class_path: src.modules.jsa.proposal_model.ProposalModelCategorical
+      init_args:
+        num_categories: [1024]
+        num_latent_vars: 1
+        net:
+          class_path: src.modules.jsa.jsa_adaptor.ConvEncoder
+          init_args:
+            ch: 64
+            out_ch: 1024
+            ch_mult: [1, 2, 4]
+            num_res_blocks: 2
+            attn_resolutions: []
+            activation: swish
+            norm_type: group
+            dropout: 0.0
+            resamp_with_conv: true
+            in_channels: 3
+            resolution: 32
+            z_channels: 256
+    sampler:
+      _target_: src.samplers.misampler.MISampler
+      use_cache: false
+      dataset_size: 50000
+      element_shape: [8, 8]
+      prefer_fast_acceptance: true
+      prefer_parallel_sampling: true
+    langevin_sampler:
+      _target_: src.samplers.langevin_sampler.LangevinSampler
+      step_size: 0.03
+      noise_scale: 1.0
+      num_steps: 10
+      clamp_range: [-1.0, 1.0]
+      detach_between_steps: true
+    ncg_sampler:
+      _target_: src.samplers.ncg_sampler.NCGSampler
+      alpha: 1.0
+      p_norm: 2.0
+      num_steps: 1
+      num_sites: 2
+      temperature: 1.0
+      include_current_token: true
+    joint_negative_sampler:
+      _target_: src.samplers.joint_negative_sampler.JointNegativeSampler
+      num_rounds: 1
+      replay_buffer_size: 4096
+      replay_prob: 0.95
+      init_noise_std: 0.02
+      clamp_range: [-1.0, 1.0]
+
+    base_lr_joint: 4.5e-07
+    base_lr_prior: 4.5e-07
+    base_lr_proposal: 4.5e-07
+    num_mis_steps: 10
+    cache_start_epoch: 0
+    global_only_steps: 20000
+    block_strategy_prob: 0.0
+
+    init_from_ckpt: null
+    init_mode: resume
+    init_strict: false
+
+    force_stage: null
+    auto_stage_epochs: [0, 0]
+    stage3_negative_rounds: 1
+    parallel_mis_sampling: true
+    train_proposal_in_stage1: true
+    train_proposal_in_stage3: true
+    num_validation_mis_steps: 10
+
+data:
+  class_path: src.data.cifar10.CIFAR10DataModule
+  init_args:
+    root: ./data/cifar10
+    batch_size: 64
+    num_workers: 4
+
+trainer:
+  logger:
+    class_path: lightning.pytorch.loggers.tensorboard.TensorBoardLogger
+    init_args:
+      save_dir: ./egs/cifar10/perceptual_jsa
+      name: cifar10_energy
+
+  callbacks:
+    - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+      init_args:
+        monitor: valid/positive_energy
+        mode: min
+        save_top_k: 3
+        filename: "{epoch:06}"
+        save_last: true
+
+    - class_path: lightning.pytorch.callbacks.LearningRateMonitor
+      init_args:
+        logging_interval: step
+
+    - class_path: src.utils.callbacks.grad_norm_callback.GradientNorm
+      init_args:
+        norm_type: 2
+        log_every_n_steps: 1
+
+    - class_path: src.utils.callbacks.save_model_summary_callback.LogModelSummary
+      init_args:
+        max_depth: 4
+
+    - class_path: src.utils.callbacks.image_logger_callback.ImageLogger
+      init_args:
+        batch_frequency: 750
+        max_images: 16
+        nrow: 4
+        clamp: true
+
+    - class_path: src.utils.callbacks.codebook_stats_callback.CodebookStats
+      init_args:
+        stage: valid
+        log_prefix: valid
+        plot: true
+        sort_by_counter: true
+        use_log_scale: false
+
+  max_epochs: 100000
+  max_steps: 100000
+  accelerator: auto
+  devices: 1
+  strategy: auto
+  precision: 32
+  enable_progress_bar: true
+  log_every_n_steps: 25

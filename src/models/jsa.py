@@ -4,7 +4,6 @@
 
 import torch
 from lightning.pytorch import LightningModule
-from hydra.utils import instantiate
 import torch.distributed as dist
 from typing import Any
 import math
@@ -15,6 +14,7 @@ from src.base.base_dataset import JsaDataset
 from src.utils.codebook_utils import encode_multidim_to_index
 from src.utils.schedulers import SigmaScheduler
 from src.utils.file_logger import get_file_logger
+from src.utils.instantiate_utils import instantiate
 from src.modules.losses.jsa_gan import JSAGANLoss
 
 
@@ -258,9 +258,10 @@ class JSA(LightningModule):
 
         # Update joint model
         opt_joint.zero_grad()
-        nll_loss = self.joint_model.get_loss(
+        loss_out = self.joint_model.get_loss(
             x, h, return_forward=False, backward_fn=self.manual_backward
         )
+        nll_loss = loss_out.loss
         total_loss_joint = nll_loss  # only for logging
         # if self.gan_loss is not None:
 

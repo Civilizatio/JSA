@@ -1,6 +1,7 @@
 # src/data/binary_mnist.py
 from lightning.pytorch import LightningDataModule
 from torch.utils.data import DataLoader, random_split
+import src.utils.torchvision_compat # noqa
 from torchvision import datasets, transforms
 from src.base.base_dataset import JsaDataset
 

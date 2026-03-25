@@ -2,6 +2,7 @@ import os
 from PIL import Image
 import numpy as np
 import torch
+import src.utils.torchvision_compat # noqa
 import torchvision
 from lightning.pytorch.callbacks import Callback
 from lightning.pytorch.utilities.rank_zero import rank_zero_only

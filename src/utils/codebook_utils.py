@@ -2,6 +2,7 @@
 import torch
 import math
 from typing import List, Union
+import src.utils.torchvision_compat # noqa
 
 
 def compute_category_weights(

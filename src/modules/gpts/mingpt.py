@@ -373,10 +373,17 @@ class DummyGPT(nn.Module):
 
 #### sampling utils
 # New version: using `LogitsWarper` from transformers
-from transformers import (
-    TopKLogitsWarper,
-    TopPLogitsWarper,
-)
+try:
+    from transformers import (
+        TopKLogitsWarper,
+        TopPLogitsWarper,
+    )
+    _HAS_TRANSFORMERS_WARPER = True
+except ImportError:
+    TopKLogitsWarper = None
+    TopPLogitsWarper = None
+    _HAS_TRANSFORMERS_WARPER = False
+
 
 
 def top_k_top_p_filtering(
@@ -384,34 +391,25 @@ def top_k_top_p_filtering(
     top_k=0,
     top_p=1.0,
 ):
-    warpers = []
-    if top_k > 0:
-        warpers.append(TopKLogitsWarper(top_k=top_k))
-    if top_p < 1.0:
-        warpers.append(TopPLogitsWarper(top_p=top_p))
+    if _HAS_TRANSFORMERS_WARPER:
+        warpers = []
+        if top_k > 0:
+            warpers.append(TopKLogitsWarper(top_k=top_k))
+        if top_p < 1.0:
+            warpers.append(TopPLogitsWarper(top_p=top_p))
 
-    for warper in warpers:
-        logits = warper(None, logits)
+        for warper in warpers:
+            logits = warper(None, logits)
 
-    return logits
-
-
-""" Functions below can be deleted.
-
-- top_k_logits: old version of top_k_top_p_filtering, only supports top_k.
-- sample/sample_with_past: they are moved to the `GPT` class as methods.
-- _top_k_top_p_filtering: old version of top_k_top_p_filtering, have been replaced by the new version using `LogitsWarper` from transformers.
-"""
-
-
-def top_k_logits(logits, k):
-    v, ix = torch.topk(logits, k)
-    out = logits.clone()
-    out[out < v[:, [-1]]] = -float("Inf")
-    return out
-
+        return logits
+    else:
+        logger.warning(
+            "Transformers library not found. Falling back to old version of top_k_top_p_filtering. Please install transformers for better performance."
+        )
+        return _top_k_top_p_filtering(logits, top_k=top_k, top_p=top_p)
 
 # Old version of top_k_top_p_filtering
+# Used when transformers library is not available, which is less efficient than the new version using LogitsWarper from transformers.
 def _top_k_top_p_filtering(
     logits, top_k=0, top_p=1.0, filter_value=-float("Inf"), min_tokens_to_keep=1
 ):
@@ -449,6 +447,21 @@ def _top_k_top_p_filtering(
         )
         logits[indices_to_remove] = filter_value
     return logits
+
+
+
+""" NOTE: Functions below can be deleted.
+
+- top_k_logits: old version of top_k_top_p_filtering, only supports top_k.
+- sample/sample_with_past: they are moved to the `GPT` class as methods.
+"""
+
+
+def top_k_logits(logits, k):
+    v, ix = torch.topk(logits, k)
+    out = logits.clone()
+    out[out < v[:, [-1]]] = -float("Inf")
+    return out
 
 
 @torch.no_grad()

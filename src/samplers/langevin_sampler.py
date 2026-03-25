@@ -9,8 +9,10 @@ import torch
 from torch import Tensor
 import torch.nn as nn
 
+from src.base.base_sampler import BaseSampler
 
-class LangevinSampler:
+
+class LangevinSampler(BaseSampler):
     """Sample ``x`` with fixed ``h`` using overdamped Langevin dynamics.
 
     The sampler follows the update

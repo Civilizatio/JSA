@@ -1,5 +1,5 @@
 # src/models/components/joint_model.py
-
+from __future__ import annotations
 import torch
 import torch.nn as nn
 
@@ -132,6 +132,7 @@ class _JointModelBernoulliBernoulli(BaseJointModel):
         probs_x = self.forward(h).squeeze(-1)  # [B, output_dim]
         x = (probs_x > 0.5).float()
         return x
+
 
 # // Remove Bernoulli likelihood model and use Categorical-Gaussian model instead, as Bernoulli likelihood is too hard to optimize for complex datasets like ImageNet, even with a powerful network. We keep it here for reference and potential future use on simpler datasets.
 class _JointModelBernoulliGaussian(BaseJointModel):
@@ -519,7 +520,7 @@ class JointModelCategoricalGaussian(BaseJointModel):
         mean_x = self.forward(h)  # [B, ...]
         return mean_x  # [B, output_dim]
 
-    def get_loss(self, x, h, return_forward=False, backward_fn=None):
+    def get_loss(self, x, h, return_forward=False, backward_fn=None) -> JointLossOutput:
         """Compute negative log joint probability as loss
 
         Args:
@@ -583,10 +584,10 @@ class JointModelCategoricalGaussian(BaseJointModel):
 
         total_loss = total_loss / num_samples  # average over all samples
 
-        if return_forward:
-            return total_loss, mean_x_last.squeeze(1)
-        else:
-            return total_loss
+        return JointLossOutput(
+            loss=total_loss,
+            reconstruction=mean_x_last.squeeze(1) if return_forward else None
+        )
 
     def forward(self, h):
         """Decode x ~ p(x|h)
@@ -599,3 +600,247 @@ class JointModelCategoricalGaussian(BaseJointModel):
         """
         mean_x = self.net(h)  # [N, ...]
         return mean_x  # [N, ...]
+
+
+from src.modules.losses.perceptual_distortion import (
+    ReconstructionDistortionModel,
+    ReconstructionDistortionForwardOutput,
+)
+from src.modules.jsa.prior_model import UniformPriorEnergy
+from src.utils.perceptual_stage import PerceptualTrainingStage
+from dataclasses import dataclass
+from typing import Dict, Tuple, Optional
+
+
+@dataclass
+class JointLossOutput:
+    loss: torch.Tensor
+    reconstruction: Optional[torch.Tensor] = None
+    components: Optional[Dict[str, torch.Tensor]] = None
+
+
+@dataclass
+class EnergyOutput:
+    energy: torch.Tensor
+    reconstruction: torch.Tensor
+    components: Dict[str, torch.Tensor]
+
+
+class JointModelCategoricalEnergy(BaseJointModel):
+    """Energy-based joint model for perceptual JSA.
+
+    The model keeps the original JSA view of a *joint* score over ``(x, h)`` while replacing the
+    Gaussian likelihood with a more general energy decomposition:
+
+    ``u(x, h) = lambda_d * d(x, h) + lambda_p * f(h)``
+
+    where ``d`` is the reconstruction/perceptual distortion and ``f`` is a prior energy.
+
+    Stage behaviour
+    ---------------
+    * stage 1 / stage 2: only the distortion energy participates in ``log p(x, h)``;
+    * stage 3: both distortion and prior energies are active.
+
+    This makes stage-2 latent sampling consistent with the task description: the latent codes used
+    to pretrain the prior are still sampled from the stage-1 distortion-only posterior.
+    """
+
+    def __init__(
+        self,
+        distortion_model: ReconstructionDistortionModel,
+        prior_model: nn.Module = None,
+        distortion_weight: float = 1.0,
+        prior_weight: float = 1.0,
+        sample_chunk_size: int = 8,
+        default_stage=PerceptualTrainingStage.FULL_EBM,
+    ):
+        super().__init__()
+        self.distortion_model = distortion_model
+        self.prior_model = (
+            prior_model
+            if prior_model is not None
+            else UniformPriorEnergy(
+                num_categories=getattr(distortion_model, "num_categories", None)
+            )
+        )
+        self.distortion_weight = float(distortion_weight)
+        self.prior_weight = float(prior_weight)
+        self.sample_chunk_size = int(sample_chunk_size)
+        self.current_stage = PerceptualTrainingStage.from_value(default_stage)
+
+        # Keep a `net` attribute for backward compatibility with callbacks and summary code.
+        self.net = getattr(self.distortion_model, "decoder", self.distortion_model)
+
+    @property
+    def latent_dim(self):
+        return getattr(self.distortion_model, "latent_dim", None)
+
+    @property
+    def num_categories(self):
+        return getattr(self.distortion_model, "num_categories", None)
+
+    def set_stage(self, stage):
+        self.current_stage = PerceptualTrainingStage.from_value(stage)
+
+    def _resolve_stage(self, stage=None):
+        stage = PerceptualTrainingStage.from_value(stage)
+        if stage is None:
+            stage = self.current_stage
+        return stage
+
+    def _component_weights(self, stage=None):
+        stage = self._resolve_stage(stage)
+        distortion_weight = self.distortion_weight
+        if stage in {
+            PerceptualTrainingStage.DECODER_PRETRAIN,
+            PerceptualTrainingStage.PRIOR_PRETRAIN,
+        }:
+            prior_weight = 0.0
+        else:
+            prior_weight = self.prior_weight
+        return distortion_weight, prior_weight
+
+    def get_last_layer_weight(self):
+        if hasattr(self.distortion_model, "get_last_layer_weight"):
+            return self.distortion_model.get_last_layer_weight()
+        return None
+
+    def forward(self, h):
+        return self.distortion_model.decode(h)
+
+    def decode(self, h):
+        return self.forward(h)
+
+    def distortion(self, x, h) -> ReconstructionDistortionForwardOutput:
+        x_hat = self.forward(h)
+        out = self.distortion_model.distortion_from_reconstruction(x, x_hat)
+        return ReconstructionDistortionForwardOutput(
+            distortion=out.distortion, reconstruction=x_hat, components=out.components
+        )
+
+    def prior_energy(self, h):
+        return self.prior_model(h)
+
+    def energy(self, x, h, stage=None) -> EnergyOutput:
+        dist_out = self.distortion(x, h)
+        prior = self.prior_energy(h)
+        distortion_weight, prior_weight = self._component_weights(stage)
+        total = distortion_weight * dist_out.distortion + prior_weight * prior
+
+        components = {
+            **dist_out.components,
+            "prior_total": prior,
+            "energy_total": total,
+            "distortion_weight": torch.full_like(total, distortion_weight),
+            "prior_weight": torch.full_like(total, prior_weight),
+        }
+        return EnergyOutput(
+            energy=total, reconstruction=dist_out.reconstruction, components=components
+        )
+
+    def log_joint_prob(self, x, h, stage=None):
+        return -self.energy(x, h, stage=stage).energy
+
+    def log_joint_prob_multiple_samples(self, x, h, stage=None):
+        batch_size, num_samples = h.shape[0], h.shape[1]
+        outputs = []
+        for i in range(0, num_samples, self.sample_chunk_size):
+            chunk_size = min(self.sample_chunk_size, num_samples - i)
+            h_chunk = h[:, i : i + chunk_size, ...]
+            h_flat = h_chunk.reshape(batch_size * chunk_size, *h_chunk.shape[2:])
+            x_expanded = x.repeat_interleave(chunk_size, dim=0)
+            chunk = self.log_joint_prob(x_expanded, h_flat, stage=stage)
+            outputs.append(chunk.view(batch_size, chunk_size))
+        return torch.cat(outputs, dim=1)
+
+    def log_joint_prob_diff(self, x, h_new, h_old, stage=None):
+        return self.log_joint_prob_multiple_samples(
+            x, h_new, stage=stage
+        ) - self.log_joint_prob_multiple_samples(x, h_old, stage=stage)
+
+    def energy_multiple_samples(self, x, h, stage=None) -> EnergyOutput:
+        batch_size, num_samples = h.shape[0], h.shape[1]
+        energy_list = []
+        recon_list = []
+        component_buckets = {}
+
+        for i in range(0, num_samples, self.sample_chunk_size):
+            chunk_size = min(self.sample_chunk_size, num_samples - i)
+            h_chunk = h[:, i : i + chunk_size, ...]
+            h_flat = h_chunk.reshape(batch_size * chunk_size, *h_chunk.shape[2:])
+            x_expanded = x.repeat_interleave(chunk_size, dim=0)
+
+            out = self.energy(x_expanded, h_flat, stage=stage)
+
+            energy_list.append(out.energy.view(batch_size, chunk_size))
+            recon_list.append(
+                out.reconstruction.view(
+                    batch_size, chunk_size, *out.reconstruction.shape[1:]
+                )
+            )
+
+            if not component_buckets:
+                component_buckets = {key: [] for key in out.components}
+            for key, value in out.components.items():
+                component_buckets[key].append(value.view(batch_size, chunk_size))
+
+        energy_all = torch.cat(energy_list, dim=1)
+        recon_all = torch.cat(recon_list, dim=1)
+        components_all = {
+            key: torch.cat(values, dim=1) for key, values in component_buckets.items()
+        }
+
+        return EnergyOutput(
+            energy=energy_all, reconstruction=recon_all, components=components_all
+        )
+
+    def sample(self, h=None, num_samples=1, stage=None):
+        """Sample x ~ p(x|h) by finding the lowest energy reconstruction for the given h.
+        
+        NOTE: This sampling method is deterministic and only returns the mean reconstruction, which is not a true sample from the distribution.
+        """
+        if h is None:
+            if hasattr(self.prior_model, "sample") and self.num_categories is not None:
+                raise ValueError(
+                    "Please provide `h` explicitly when using the energy model sample() helper. "
+                    "Sampling from the prior should be performed via `prior_model.sample(...)`."
+                )
+            raise ValueError(
+                "`h` must be provided for JointModelCategoricalEnergy.sample`."
+            )
+        x_hat = self.decode(h)
+        if num_samples <= 1:
+            return x_hat.unsqueeze(1)
+        return x_hat.unsqueeze(1).expand(-1, num_samples, *x_hat.shape[1:]).contiguous()
+
+    def get_loss(
+        self,
+        x,
+        h,
+        stage=None,
+        return_forward: bool = False,
+        return_components: bool = False,
+        backward_fn=None,
+    ) -> JointLossOutput:
+        # We fetch full output using dataclass and then unpack as caller expects
+        outputs = self.energy_multiple_samples(x, h, stage=stage)
+
+        energy_all = outputs.energy
+        recon_all = outputs.reconstruction
+        component_all = outputs.components
+
+        loss = energy_all.mean()
+        if backward_fn is not None:
+            backward_fn(loss)
+
+        recon_out = recon_all[:, -1, ...] if return_forward else None
+        
+        summary = None
+        if return_components:
+            summary = {key: value.mean() for key, value in component_all.items()}
+
+        return JointLossOutput(
+            loss=loss,
+            reconstruction=recon_out,
+            components=summary
+        )

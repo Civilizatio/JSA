@@ -22,7 +22,6 @@ def ensure_torchvision_compat() -> None:
         return
     
     try:
-        
         import torchvision
         return
     except Exception:
@@ -37,4 +36,5 @@ def ensure_torchvision_compat() -> None:
             _TORCHVISION_LIB = None
 
 
+ensure_torchvision_compat() # Ensure compatibility at import time, so that downstream code can safely import torchvision without worrying about the custom op registration status.
 __all__ = ["ensure_torchvision_compat"]

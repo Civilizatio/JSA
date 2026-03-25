@@ -1,6 +1,7 @@
 # src/data/imagenet.py
 from lightning.pytorch import LightningDataModule
 from torch.utils.data import DataLoader, random_split
+import src.utils.torchvision_compat # noqa
 from torchvision import datasets, transforms
 from torchvision.datasets import ImageFolder
 from src.base.base_dataset import JsaDataset

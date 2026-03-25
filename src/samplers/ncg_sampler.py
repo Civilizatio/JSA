@@ -21,10 +21,11 @@ import torch.nn.functional as F
 from torch import Tensor
 import torch.nn as nn
 
+from src.base.base_sampler import BaseSampler
 
 
 
-class NCGSampler:
+class NCGSampler(BaseSampler):
     def __init__(
         self,
         joint_model: nn.Module,

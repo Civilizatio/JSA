@@ -1,0 +1,15 @@
+# Prior pretraining on latent codes sampled from the stage-1 distortion posterior.
+# Typical usage: provide --model.init_args.init_from_ckpt=/path/to/stage1.ckpt
+
+model:
+  init_args:
+    force_stage: prior_pretrain
+    num_mis_steps: 15
+    parallel_mis_sampling: true
+    num_validation_mis_steps: 15
+
+trainer:
+  logger:
+    init_args:
+      name: cifar10_stage2_prior
+  max_steps: 50000

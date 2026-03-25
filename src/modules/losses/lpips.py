@@ -6,6 +6,7 @@ And we haven't used it in JSA yet, while it is only used in the VQ-VAE experimen
 
 import torch
 import torch.nn as nn
+import src.utils.torchvision_compat # noqa
 from torchvision import models
 from collections import namedtuple
 

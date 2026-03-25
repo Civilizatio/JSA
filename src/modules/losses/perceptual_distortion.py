@@ -13,7 +13,8 @@ The implementation intentionally keeps the interfaces small so they can be reuse
 from __future__ import annotations
 
 from collections import OrderedDict
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple, Union, Callable
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Sequence, Union, Callable
 
 
 import torch
@@ -21,14 +22,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 
-from src.utils.torchvision_compat import ensure_torchvision_compat
+import src.utils.torchvision_compat # noqa
 from src.base.base_feature_extractor import BaseFeatureExtractor
-
-ensure_torchvision_compat()
 from torchvision import models
 from torchvision.models.feature_extraction import create_feature_extractor
-
-# Tensor = torch.Tensor
 
 
 def _infer_batch_repeat_factor(x: Tensor, target_batch: int) -> int:
@@ -328,6 +325,19 @@ class FeaturePerceptualLoss(BaseDistanceLoss):
         return self.weight * total
 
 
+@dataclass
+class DistortionOutput:
+    distortion: Tensor
+    components: Dict[str, Tensor]
+
+
+@dataclass
+class ReconstructionDistortionForwardOutput:
+    distortion: Tensor
+    reconstruction: Tensor
+    components: Dict[str, Tensor]
+
+
 class ReconstructionDistortionModel(nn.Module):
     """Combine a decoder with pixel and perceptual distortion terms.
 
@@ -403,7 +413,7 @@ class ReconstructionDistortionModel(nn.Module):
             x_hat = x_hat.clamp(self.clamp_output[0], self.clamp_output[1])
         return x_hat
 
-    def distortion_from_reconstruction(self, x: Tensor, x_hat: Tensor):
+    def distortion_from_reconstruction(self, x: Tensor, x_hat: Tensor) -> DistortionOutput:
         x = _match_batch_size(x, x_hat.shape[0])
         total = torch.zeros(x_hat.shape[0], device=x_hat.device, dtype=x_hat.dtype)
         pixel_total = torch.zeros_like(total)
@@ -425,23 +435,21 @@ class ReconstructionDistortionModel(nn.Module):
         components["perceptual_total"] = perceptual_total
         components["distortion_total"] = total
 
-        return {"distortion": total, "components": components}
+        return DistortionOutput(distortion=total, components=components)
 
     def forward(
         self,
         x: Tensor,
         h: Tensor,
-        # return_reconstruction: bool = False,
-        # return_components: bool = False,
-    ):
+    ) -> ReconstructionDistortionForwardOutput:
         x_hat = self.decode(h)
         outputs = self.distortion_from_reconstruction(x, x_hat)
 
-        return {
-            "distortion": outputs["distortion"],
-            "reconstruction": x_hat,
-            "components": outputs["components"],
-        }
+        return ReconstructionDistortionForwardOutput(
+            distortion=outputs.distortion,
+            reconstruction=x_hat,
+            components=outputs.components,
+        )
 
 
 __all__ = [

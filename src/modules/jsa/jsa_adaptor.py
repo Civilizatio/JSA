@@ -140,14 +140,25 @@ class ConvDecoder(nn.Module):
     def get_last_layer_weight(self):
         return self.decoder.conv_out.weight
 
-    def forward(self, h):
-        # h: [N, H, W, num_latent_vars]
-        # return x: [N, out_ch, H, W]
+    def embed(self, h):
+        """Embed discrete latent indices into a dense spatial tensor.
+
+        Returns a tensor of shape ``[N, H, W, sum(embedding_dims)]``.
+        This helper keeps the original decoder interface intact while enabling
+        gradient-based samplers such as NCG to operate directly in the embedding space.
+        """
         h_embedded = [
             embedding(h[..., i].long())
             for i, embedding in enumerate(self.embeddings)
         ]
-        h_densed = torch.cat(h_embedded, dim=-1)  # [N, H, W, sum(emb_dim)]
+        return torch.cat(h_embedded, dim=-1)
+
+    def decode_from_embeddings(self, h_densed):
+        """Decode already-embedded latent representations.
+
+        Args:
+            h_densed: Tensor with shape ``[N, H, W, sum(embedding_dims)]``.
+        """
         h = h_densed.permute(
             0, 3, 1, 2
         ).contiguous()  # [B, H, W, sum(emb_dim)] -> [B, sum(emb_dim), H, W]
@@ -162,6 +173,13 @@ class ConvDecoder(nn.Module):
         elif self.final_activation is None:
             pass
 
+        return x
+
+    def forward(self, h):
+        # h: [N, H, W, num_latent_vars]
+        # return x: [N, out_ch, H, W]
+        h_densed = self.embed(h)  # [N, H, W, sum(emb_dim)]
+        x = self.decode_from_embeddings(h_densed)
         return x
 
 

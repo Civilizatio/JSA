@@ -1,0 +1,15 @@
+# Decoder / distortion pretraining.
+# Usually launched from scratch.
+
+model:
+  init_args:
+    force_stage: decoder_pretrain
+    num_mis_steps: 15
+    parallel_mis_sampling: true
+    num_validation_mis_steps: 15
+
+trainer:
+  logger:
+    init_args:
+      name: cifar10_stage1_decoder
+  max_steps: 50000

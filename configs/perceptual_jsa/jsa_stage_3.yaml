@@ -1,0 +1,38 @@
+# Full energy-based training with joint negative sampling.
+# Typical usage: provide --model.init_args.init_from_ckpt=/path/to/stage2.ckpt
+
+model:
+  init_args:
+    force_stage: full_ebm
+    num_mis_steps: 8
+    parallel_mis_sampling: true
+    stage3_negative_rounds: 1
+    num_validation_mis_steps: 8
+    joint_negative_sampler:
+      _target_: src.samplers.joint_negative_sampler.JointNegativeSampler
+      num_rounds: 2
+      replay_buffer_size: 8192
+      replay_prob: 0.95
+      init_noise_std: 0.02
+      clamp_range: [-1.0, 1.0]
+    langevin_sampler:
+      _target_: src.samplers.langevin_sampler.LangevinSampler
+      step_size: 0.025
+      noise_scale: 1.0
+      num_steps: 15
+      clamp_range: [-1.0, 1.0]
+      detach_between_steps: true
+    ncg_sampler:
+      _target_: src.samplers.ncg_sampler.NCGSampler
+      alpha: 1.0
+      p_norm: 2.0
+      num_steps: 1
+      num_sites: 2
+      temperature: 1.0
+      include_current_token: true
+
+trainer:
+  logger:
+    init_args:
+      name: cifar10_stage3_full_ebm
+  max_steps: 100000

@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import math
-from typing import Optional, Sequence, Tuple, TypedDict
+from typing import Optional, Sequence, Tuple
+from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
@@ -12,26 +13,10 @@ from torch import Tensor
 
 from src.utils.codebook_utils import decode_index_to_multidim, encode_multidim_to_index
 
-# Tensor = torch.Tensor
 
-class PriorAnalysisResults(TypedDict):
-    """The result of autoregressive prior analysis.
-    
-    Attributes:
-        prior_nll: 
-            Negative Log-Likelihood (NLL). Measures how likely the sequence is under the prior.
-            Formula: $\\text{NLL} = - \\frac{1}{T} \\sum_{t=1}^{T} \\log p_\\theta(x_t | x_{<t})$
-            
-        prior_perplexity: 
-            Perplexity. The exponentiated average NLL, representing the effective branch factor 
-            (how many tokens the model is "guessing" between).
-            Formula: $\\text{PPL} = \\exp(\\text{NLL})$
-            
-        token_entropy: 
-            The Shannon entropy of the predicted categorical distributions. High entropy 
-            indicates flat, uncertain predictions over the vocabulary.
-            Formula: $\\text{Entropy} = - \\sum_{v=1}^{V} p_v \\log p_v$
-    """
+@dataclass
+class PriorAnalysisOutput:
+    """Structured output for autoregressive prior analysis."""
     prior_nll: Tensor
     prior_perplexity: Tensor
     token_entropy: Tensor
@@ -54,9 +39,13 @@ class UniformPriorEnergy(nn.Module):
     def get_loss(self, h: Tensor) -> Tensor:
         return self.forward(h).mean()
 
-    def analyze(self, h: Tensor) -> PriorAnalysisResults:
+    def analyze(self, h: Tensor) -> PriorAnalysisOutput:
         zero = torch.tensor(0.0, device=h.device)
-        return {"prior_nll": zero, "prior_perplexity": torch.tensor(1.0, device=h.device), "token_entropy": zero}
+        return PriorAnalysisOutput(
+            prior_nll=zero,
+            prior_perplexity=torch.tensor(1.0, device=h.device),
+            token_entropy=zero
+        )
 
 
 class GPTPriorEnergy(nn.Module):
@@ -151,7 +140,7 @@ class GPTPriorEnergy(nn.Module):
         return logits
 
     def _prepare_teacher_forcing(self, tokens: Tensor) -> Tuple[Tensor, Tensor]:
-        batch_size, seq_len = tokens.shape
+        batch_size, _ = tokens.shape
         bos = torch.full(
             (batch_size, 1),
             self.sos_token,
@@ -183,7 +172,7 @@ class GPTPriorEnergy(nn.Module):
         return self.forward(h).mean()
 
     @torch.no_grad()
-    def analyze(self, h: Tensor) -> PriorAnalysisResults:
+    def analyze(self, h: Tensor) -> PriorAnalysisOutput:
         tokens, _ = self._to_token_sequence(h)
         inputs, targets = self._prepare_teacher_forcing(tokens)
         logits = self._forward_logits(inputs)
@@ -194,11 +183,11 @@ class GPTPriorEnergy(nn.Module):
         entropy = -(probs * log_probs).sum(dim=-1)
         nll = token_nll.mean()
         perplexity = torch.exp(token_nll.mean())
-        return {
-            "prior_nll": nll,
-            "prior_perplexity": perplexity,
-            "token_entropy": entropy.mean(),
-        }
+        return PriorAnalysisOutput(
+            prior_nll=nll,
+            prior_perplexity=perplexity,
+            token_entropy=entropy.mean(),
+        )
 
     @torch.no_grad()
     def sample(
