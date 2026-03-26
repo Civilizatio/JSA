@@ -18,7 +18,7 @@ model:
       init_args:
         distortion_weight: 1.0
         prior_weight: 1.0
-        sample_chunk_size: 4
+        sample_chunk_size: 3
         default_stage: full_ebm
         distortion_model:
           class_path: src.modules.losses.perceptual_distortion.ReconstructionDistortionModel
@@ -109,7 +109,7 @@ model:
       use_cache: false
       dataset_size: 50000
       element_shape: [8, 8]
-      prefer_fast_acceptance: true
+      prefer_fast_acceptance: false
       prefer_parallel_sampling: true
     langevin_sampler:
       _target_: src.samplers.langevin_sampler.LangevinSampler
@@ -138,7 +138,7 @@ model:
     base_lr_prior: 4.5e-07
     base_lr_proposal: 4.5e-07
     num_mis_steps: 10
-    cache_start_epoch: 0
+    cache_start_epoch: 1000
     global_only_steps: 20000
     block_strategy_prob: 0.0
 
@@ -161,6 +161,7 @@ data:
     batch_size: 64
     num_workers: 4
 
+
 trainer:
   logger:
     class_path: lightning.pytorch.loggers.tensorboard.TensorBoardLogger
@@ -174,7 +175,7 @@ trainer:
         monitor: valid/positive_energy
         mode: min
         save_top_k: 3
-        filename: "{epoch:06}"
+        filename: "{step:06}-{epoch:06}"
         save_last: true
 
     - class_path: lightning.pytorch.callbacks.LearningRateMonitor
@@ -213,3 +214,4 @@ trainer:
   precision: 32
   enable_progress_bar: true
   log_every_n_steps: 25
+

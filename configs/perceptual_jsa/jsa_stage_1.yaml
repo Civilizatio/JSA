@@ -4,7 +4,7 @@
 model:
   init_args:
     force_stage: decoder_pretrain
-    num_mis_steps: 15
+    num_mis_steps: 20
     parallel_mis_sampling: true
     num_validation_mis_steps: 15
 
@@ -12,4 +12,5 @@ trainer:
   logger:
     init_args:
       name: cifar10_stage1_decoder
-  max_steps: 50000
+  max_steps: 100000
+  strategy: ddp_find_unused_parameters_true

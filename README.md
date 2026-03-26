@@ -64,7 +64,7 @@ tensorboard --logdir=egs/continuous_mnist/categorical_prior/version_11 --port=60
 
 ``` bash
 
-tensorboard --logdir=egs/imagenet/latent_transformer --port 6023
+tensorboard --logdir=egs/cifar10/perceptual_jsa --port 6023
 ```
 
 ``` bash

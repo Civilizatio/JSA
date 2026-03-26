@@ -20,6 +20,7 @@ from typing import Any, Dict, Optional, Sequence
 
 import torch
 import dataclasses
+import torch.distributed as dist
 
 
 from src.base.base_dataset import JsaDataset
@@ -180,9 +181,14 @@ class PerceptualJSA(JSA):
             "prior_model": getattr(self.joint_model, "prior_model", self.joint_model),
             "proposal_model": self.proposal_model,
         }
-
-        # Maintain a dictionary of optimizers for different model components to allow for flexible training schedules and easier access in training steps.
-        self._named_optimizers: Dict[str, torch.optim.Optimizer] = {}
+        # optimizer_slots keeps track of which optimizer index corresponds to which model component, since not all components may be present and the optimizers list is constructed dynamically in configure_optimizers
+        #! This is a very important detail: you should not change it to a dictionary that directly stores the optimizers, 
+        #! because the `glboal_step` is updated when we call `self.optimizers()` and we want to make sure that the correct optimizer is stepped for each component in each training stage, even as the optimizers are created dynamically based on which model components are present.
+        self._optimizer_slots = {
+            "distortion": None,
+            "prior": None,
+            "proposal": None,
+        }
 
     # ------------------------------------------------------------------
     # Stage helpers
@@ -284,40 +290,49 @@ class PerceptualJSA(JSA):
                 self.lr_proposal,
             )
 
-        optimizers_dict = {}
+        optimizers = []
 
         distortion_params = [
             p for p in self.joint_model.distortion_model.parameters() if p.requires_grad
         ]
         if len(distortion_params) > 0:
-            optimizers_dict["distortion"] = torch.optim.Adam(
-                distortion_params, lr=self.lr_joint
-            )
+            self._optimizer_slots["distortion"] = len(optimizers)
+            optimizers.append(torch.optim.Adam(distortion_params, lr=self.lr_joint))
 
         prior_params = [
             p for p in self.joint_model.prior_model.parameters() if p.requires_grad
         ]
         if len(prior_params) > 0:
-            optimizers_dict["prior"] = torch.optim.Adam(prior_params, lr=self.lr_prior)
+            self._optimizer_slots["prior"] = len(optimizers)
+            optimizers.append(torch.optim.Adam(prior_params, lr=self.lr_prior))
 
         proposal_params = [
             p for p in self.proposal_model.parameters() if p.requires_grad
         ]
         if len(proposal_params) > 0:
-            optimizers_dict["proposal"] = torch.optim.Adam(
-                proposal_params, lr=self.lr_proposal
-            )
+            self._optimizer_slots["proposal"] = len(optimizers)
+            optimizers.append(torch.optim.Adam(proposal_params, lr=self.lr_proposal))
 
-        self._named_optimizers = optimizers_dict
-
-        return list(optimizers_dict.values())
+    
+        return optimizers
+    
+    def _optimizer_dict(self) -> Dict[str, torch.optim.Optimizer]:
+        optimizers = self.optimizers()
+        if not isinstance(optimizers, (list, tuple)):
+            optimizers = [optimizers]
+        result = {}
+        for name, idx in self._optimizer_slots.items():
+            if idx is not None:
+                result[name] = optimizers[idx]
+        return result
 
     def _log_component_summary(self, prefix: str, summary: Dict[str, torch.Tensor]):
         for key, value in summary.items():
             if not torch.is_tensor(value):
                 value = torch.tensor(float(value), device=self.device)
+            # IMPORTANT: always detach tensors before logging to avoid memory leaks
             self.log(
-                f"{prefix}/{key}", value, prog_bar=False, logger=True, sync_dist=False
+                f"{prefix}/{key}", value.detach(), prog_bar=False, logger=True, sync_dist=False
             )
 
     # ------------------------------------------------------------------
@@ -371,10 +386,11 @@ class PerceptualJSA(JSA):
     # Training loop
     # ------------------------------------------------------------------
     def training_step(self, batch, batch_idx):
+        
         stage = self._apply_runtime_stage()
         x = self.get_input(batch, JsaDataset.IMAGE_KEY)
         idx = self.get_input(batch, JsaDataset.INDEX_KEY)
-        optimizers = self._named_optimizers
+        optimizers = self._optimizer_dict()
         zero = torch.tensor(0.0, device=self.device)
 
         h_pos = self._sample_positive_h(x, idx=idx, stage=stage)
@@ -494,7 +510,7 @@ class PerceptualJSA(JSA):
             torch.tensor(float(self._resolve_stage()), device=self.device),
             prog_bar=False,
         )
-
+  
     # ------------------------------------------------------------------
     # Validation
     # ------------------------------------------------------------------
@@ -534,12 +550,13 @@ class PerceptualJSA(JSA):
             
             for key, value in dataclasses.asdict(prior_stats).items():
                 self.log(f"valid/{key}", value, prog_bar=False, sync_dist=True)
-
+    
     # ------------------------------------------------------------------
     # Checkpoint extras
     # ------------------------------------------------------------------
     def on_save_checkpoint(self, checkpoint):
         super().on_save_checkpoint(checkpoint)
+            
         if self.joint_negative_sampler is not None:
             checkpoint["joint_negative_sampler_state"] = (
                 self.joint_negative_sampler.state_dict()
@@ -554,3 +571,6 @@ class PerceptualJSA(JSA):
             self.joint_negative_sampler.load_state_dict(
                 checkpoint["joint_negative_sampler_state"]
             )
+            
+   
+
