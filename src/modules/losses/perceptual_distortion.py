@@ -452,9 +452,53 @@ class ReconstructionDistortionModel(nn.Module):
         )
 
 
+class LPIPSLossTerm(nn.Module):
+    """LPIPS perceptual loss wrapped for use as a distortion term.
+    
+    This incorporates the exact LPIPS logic used in VQGAN/VQVAE perceptual loss, 
+    including the learned channel weighting (NetLinLayer) and feature normalization,
+    returning a per-sample scalar distortion array of shape [B].
+    """
+
+    def __init__(
+        self,
+        use_cifar10_version: bool = False,
+        use_dropout: bool = True,
+        weight: float = 1.0,
+    ):
+        super().__init__()
+        from src.modules.losses.lpips import LPIPS, LPIPS_CIFAR10
+        
+        self.weight = float(weight)
+        if use_cifar10_version:
+            self.lpips = LPIPS_CIFAR10(use_dropout=use_dropout)
+        else:
+            self.lpips = LPIPS(use_dropout=use_dropout)
+            
+        # Freeze lpips since it's used as a metric
+        _freeze_module(self.lpips)
+        self.lpips.eval()
+
+    def forward(self, x: Tensor, x_hat: Tensor) -> Tensor:
+        x = _match_batch_size(x, x_hat.shape[0])
+        # Force eval mode
+        self.lpips.eval()
+        # LPIPS expects input in range [-1, 1], which is the default for our tasks
+        loss = self.lpips(x.contiguous(), x_hat.contiguous())
+        
+        # LPIPS internally uses spatial average (mean). 
+        # To align its scale with 'sum' reduction in PixelLossTerm for MIS energy computation,
+        # we scale it up by the number of elements per sample (C * H * W).
+        num_elements = x.shape[1] * x.shape[2] * x.shape[3]
+        
+        # lpips returns shape [B, 1, 1, 1], we need [B] to match distortion API
+        return self.weight * num_elements * loss.view(-1)
+
+
 __all__ = [
     "FeaturePerceptualLoss",
     "IdentityFeatureExtractor",
+    "LPIPSLossTerm",
     "PixelLossTerm",
     "ReconstructionDistortionModel",
     "TorchvisionFeatureExtractor",

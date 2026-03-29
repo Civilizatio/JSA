@@ -821,6 +821,7 @@ class JointModelCategoricalEnergy(BaseJointModel):
         return_forward: bool = False,
         return_components: bool = False,
         backward_fn=None,
+        normalize_loss_by_dim: bool = True,  # Added: Divide loss by data dimensionality
     ) -> JointLossOutput:
         # We fetch full output using dataclass and then unpack as caller expects
         outputs = self.energy_multiple_samples(x, h, stage=stage)
@@ -830,6 +831,16 @@ class JointModelCategoricalEnergy(BaseJointModel):
         component_all = outputs.components
 
         loss = energy_all.mean()
+        
+        # When pixel parameters use reduction='sum' for strict probabilistic correctness 
+        # during sampling, the resulting loss scale is immense. 
+        # Dividing by data dimensionality decouples the optimization scale (learning rate)
+        # from the mathematically rigid energy landscape.
+        D = x.numel() / x.shape[0] if x.shape[0] > 0 else 1.0
+        scale_factor = D if normalize_loss_by_dim else 1.0
+        
+        loss = loss / scale_factor
+
         if backward_fn is not None:
             backward_fn(loss)
 
@@ -837,7 +848,7 @@ class JointModelCategoricalEnergy(BaseJointModel):
         
         summary = None
         if return_components:
-            summary = {key: value.mean() for key, value in component_all.items()}
+            summary = {key: value.mean() / scale_factor for key, value in component_all.items()}
 
         return JointLossOutput(
             loss=loss,

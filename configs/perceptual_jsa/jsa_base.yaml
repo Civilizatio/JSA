@@ -16,9 +16,9 @@ model:
     joint_model:
       class_path: src.modules.jsa.joint_model.JointModelCategoricalEnergy
       init_args:
-        distortion_weight: 1.0
+        distortion_weight: 0.5
         prior_weight: 1.0
-        sample_chunk_size: 3
+        sample_chunk_size: 2
         default_stage: full_ebm
         distortion_model:
           class_path: src.modules.losses.perceptual_distortion.ReconstructionDistortionModel
@@ -46,26 +46,32 @@ model:
             pixel_terms:
               - class_path: src.modules.losses.perceptual_distortion.PixelLossTerm
                 init_args:
-                  loss_type: l1
+                  loss_type: l2
                   weight: 1.0
-                  reduction: mean
+                  reduction: sum
             # perceptual_terms: []
             # Example perceptual term (uncomment after ensuring the torchvision weights are available locally):
+            # perceptual_terms:
+            #   - class_path: src.modules.losses.perceptual_distortion.FeaturePerceptualLoss
+            #     init_args:
+            #       loss_type: l2
+            #       weight: 0.05
+            #       reduction: mean
+            #       feature_extractor:
+            #         class_path: src.modules.losses.perceptual_distortion.TorchvisionFeatureExtractor
+            #         init_args:
+            #           backbone: vgg16
+            #           return_nodes: [features.3, features.8, features.15]
+            #           weights: DEFAULT
+            #           resize_to: 224
+            #           input_range: neg_one_to_one
+            #           normalize: imagenet
             perceptual_terms:
-              - class_path: src.modules.losses.perceptual_distortion.FeaturePerceptualLoss
+              - class_path: src.modules.losses.perceptual_distortion.LPIPSLossTerm
                 init_args:
-                  loss_type: l2
-                  weight: 0.1
-                  reduction: mean
-                  feature_extractor:
-                    class_path: src.modules.losses.perceptual_distortion.TorchvisionFeatureExtractor
-                    init_args:
-                      backbone: vgg16
-                      return_nodes: [features.3, features.8, features.15]
-                      weights: DEFAULT
-                      resize_to: 224
-                      input_range: neg_one_to_one
-                      normalize: imagenet
+                  use_cifar10_version: true
+                  use_dropout: true
+                  weight: 1.0
         prior_model:
           class_path: src.modules.jsa.prior_model.GPTPriorEnergy
           init_args:
@@ -158,7 +164,7 @@ data:
   class_path: src.data.cifar10.CIFAR10DataModule
   init_args:
     root: ./data/cifar10
-    batch_size: 64
+    batch_size: 128
     num_workers: 4
 
 

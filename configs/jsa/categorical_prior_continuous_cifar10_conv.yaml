@@ -8,7 +8,7 @@ model:
       init_args:
         sample_chunk_size: 1
         sigma: 1.0
-        sigma_mode: learnable # Options: "fixed", "scheduled", "learnable"
+        sigma_mode: fixed # Options: "fixed", "scheduled", "learnable"
         net:
           class_path: src.modules.jsa.jsa_adaptor.ConvDecoder
           init_args:
@@ -49,10 +49,11 @@ model:
             resolution: 32
             z_channels: 256 # should calculated based on num_categories and num_latent_vars
     sampler:
-      # _target_: src.samplers.misampler.MISampler
+      _target_: src.samplers.misampler.MISampler
       use_cache: false # initial value, will be updated during training
       dataset_size: 50000
       element_shape: [8, 8] # height and width of latent variable
+      prefer_fast_acceptance: false
     gan_loss: null
       # class_path: src.models.components.losses.JSAGANLoss
       # init_args:
@@ -81,14 +82,15 @@ model:
       # init_sigma: 0.1
       # clamp_to_schedule: true
 
-    scheduler:
-      _target_: src.utils.schedulers.SigmaScheduler
-      max_val: 0.2
-      min_val: 0.02
-      warmup_steps: 20000
-      total_steps: 100000 # if using epochs, make sure to set max_epochs in trainer
-      hold_steps: 30000
-      mode: cosine
+    sigma_scheduler:
+      class_path: src.utils.schedulers.SigmaScheduler
+      init_args:
+        max_val: 0.2
+        min_val: 0.02
+        warmup_steps: 20000
+        total_steps: 100000 # if using epochs, make sure to set max_epochs in trainer
+        hold_steps: 30000
+        mode: cosine
 
       # adaptive_controller:
       #   _target_: src.utils.controllers.ParameterController
