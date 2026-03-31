@@ -115,6 +115,14 @@ class JSA(LightningModule):
             self.train_logger.warning(
                 f"While loading weights from '{self.init_from_ckpt}', missing keys: {missing}, unexpected keys: {unexpected}"
             )
+            
+        # Manually trigger on_load_checkpoint so samplers/cache are correctly restored
+        if self.init_mode == "resume":
+            try:
+                self.on_load_checkpoint(ckpt)
+                self.train_logger.info("Manually triggered on_load_checkpoint to restore sampler states from init_from_ckpt.")
+            except Exception as e:
+                self.train_logger.warning(f"Failed to manually load extra config states: {e}")
 
         if self.init_mode == "warm_start":
             self.trainer.global_step = 0

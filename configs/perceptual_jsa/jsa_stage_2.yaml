@@ -4,12 +4,14 @@
 model:
   init_args:
     force_stage: prior_pretrain
-    num_mis_steps: 15
+    num_mis_steps: 0
     parallel_mis_sampling: true
     num_validation_mis_steps: 15
+    init_from_ckpt: ./egs/cifar10/perceptual_jsa/cifar10_stage1_decoder/2026-03-29_12-47-24/checkpoints/step=025872-epoch=000131.ckpt
 
 trainer:
   logger:
     init_args:
       name: cifar10_stage2_prior
-  max_steps: 50000
+  max_steps: 100000
+  strategy: ddp_find_unused_parameters_true

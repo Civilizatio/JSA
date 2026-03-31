@@ -168,8 +168,10 @@ class GPTPriorEnergy(nn.Module):
         if h.dim() >= 5:
             batch_size, num_samples = h.shape[0], h.shape[1]
             flat_h = h.reshape(batch_size * num_samples, *h.shape[2:])
-            return self.forward(flat_h).mean()
-        return self.forward(h).mean()
+            seq_len = math.prod(flat_h.shape[1:-1])
+            return (self.forward(flat_h) / seq_len).mean()
+        seq_len = math.prod(h.shape[1:-1])
+        return (self.forward(h) / seq_len).mean()
 
     @torch.no_grad()
     def analyze(self, h: Tensor) -> PriorAnalysisOutput:

@@ -239,19 +239,12 @@ class PerceptualJSA(JSA):
     # Logging / optimizer helpers
     # ------------------------------------------------------------------
     def on_fit_start(self):
-        if (
-            self.train_logger is None
-            and self.trainer is not None
-            and self.trainer.logger is not None
-        ):
-            log_dir = self.trainer.logger.log_dir
-            self.train_logger = get_file_logger(
-                log_path=f"{log_dir}/train.log",
-                name="train_logger",
-                rank=self.trainer.global_rank,
-            )
+        # Call base class to properly initialize the logger and load 'init_from_ckpt' weights.
+        # The base class now automatically triggers self.on_load_checkpoint(ckpt) for samplers.
+        super().on_fit_start()
 
     def on_train_start(self):
+        super().on_train_start()
         if self.train_logger is not None:
             self.train_logger.info(
                 f"PerceptualJSA stage mode: force_stage={self.force_stage}, auto_stage_epochs={self.auto_stage_epochs}"
@@ -326,7 +319,9 @@ class PerceptualJSA(JSA):
                 result[name] = optimizers[idx]
         return result
 
-    def _log_component_summary(self, prefix: str, summary: Dict[str, torch.Tensor]):
+    def _log_component_summary(self, prefix: str, summary: Dict[str, torch.Tensor] | dataclasses.dataclass | Any):
+        if dataclasses.is_dataclass(summary):
+            summary = dataclasses.asdict(summary)
         for key, value in summary.items():
             if not torch.is_tensor(value):
                 value = torch.tensor(float(value), device=self.device)
@@ -571,6 +566,80 @@ class PerceptualJSA(JSA):
             self.joint_negative_sampler.load_state_dict(
                 checkpoint["joint_negative_sampler_state"]
             )
+
+    # ------------------------------------------------------------------
+    # Callback Utilities
+    # ------------------------------------------------------------------
+    @torch.no_grad()
+    def safe_decode(self, h):
+        """Decodes latent codes h into images, safely handling any out-of-bounds tokens 
+        (like the sos_token from the prior model) by clamping them to the valid range.
+        """
+        if hasattr(self.proposal_model, "num_categories"):
+            num_categories = self.proposal_model.num_categories
+            if isinstance(num_categories, int):
+                h = torch.clamp(h, min=0, max=num_categories - 1)
+            elif isinstance(num_categories, (list, tuple)) and h.shape[-1] == len(num_categories):
+                h_clamped = h.clone()
+                for i, max_c in enumerate(num_categories):
+                    h_clamped[..., i] = torch.clamp(h[..., i], min=0, max=max_c - 1)
+                h = h_clamped
+        return self.decode(h)
+
+    @torch.no_grad()
+    def log_images(
+        self,
+        batch,
+        temperature=1.0,
+        top_k=100,
+        top_p=1.0,
+        callback=lambda k: None,
+        **kwargs,
+    ):
+        """Implement the logic to generate and log images during validation. 
+        In Stage 1, it logs inputs and reconstructions.
+        In Stage 2 and Stage 3, it adds generated samples from the prior model.
+        """
+        log = super().log_images(batch, **kwargs)
+        
+        stage = self._apply_runtime_stage()
+        
+        # Only in Stage 2 (PRIOR_PRETRAIN) and Stage 3 (FULL_EBM) do we consider prior samples
+        if stage in [PerceptualTrainingStage.PRIOR_PRETRAIN, PerceptualTrainingStage.FULL_EBM]:
+            prior_model = getattr(self.joint_model, "prior_model", None)
+            
+            if prior_model is not None and hasattr(prior_model, "sample"):
+                x = log["inputs"]
+                
+                # To get the spatial shape, we encode the current image using proposal model
+                h_encoded = self.proposal_model.encode(x)
+                spatial_shape = h_encoded.shape[1:-1]
+                
+                # 1. Generate samples from scratch
+                h_sampled = prior_model.sample(
+                    batch_size=x.shape[0],
+                    spatial_shape=spatial_shape,
+                    device=x.device,
+                    temperature=temperature,
+                    top_k=top_k,
+                    top_p=top_p
+                )
+                x_sampled = self.safe_decode(h_sampled)
+                log["samples_from_scratch"] = x_sampled
+                
+                # 2. Generate deterministic samples (greedy decoding: temperature=0)
+                h_deterministic = prior_model.sample(
+                    batch_size=x.shape[0],
+                    spatial_shape=spatial_shape,
+                    device=x.device,
+                    temperature=0.0,
+                    top_k=None,
+                    top_p=1.0
+                )
+                x_deterministic = self.safe_decode(h_deterministic)
+                log["samples_deterministic"] = x_deterministic
+                
+        return log
             
    
 

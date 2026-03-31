@@ -68,7 +68,7 @@ tensorboard --logdir=egs/cifar10/perceptual_jsa/cifar10_stage1_decoder/2026-03-2
 ```
 
 ``` bash
-tensorboard --logdir=egs/imagenet/jsa/lightning_logs/2026-03-18_16-29-57 --port=6024
+tensorboard --logdir=egs/cifar10/perceptual_jsa/cifar10_stage2_prior --port=6024
 ```
 tensorboard --logdir=egs/continuous_mnist/categorical_prior_conv/base_version --port=6010
 

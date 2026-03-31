@@ -46,7 +46,7 @@ model:
             pixel_terms:
               - class_path: src.modules.losses.perceptual_distortion.PixelLossTerm
                 init_args:
-                  loss_type: l2
+                  loss_type: l1
                   weight: 1.0
                   reduction: sum
             # perceptual_terms: []
