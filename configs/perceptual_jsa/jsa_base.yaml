@@ -87,9 +87,9 @@ model:
                 n_layer: 6
                 n_head: 4
                 n_embd: 128
-                embd_pdrop: 0.1
-                resid_pdrop: 0.1
-                attn_pdrop: 0.1
+                embd_pdrop: 0.2
+                resid_pdrop: 0.2
+                attn_pdrop: 0.15
     proposal_model:
       class_path: src.modules.jsa.proposal_model.ProposalModelCategorical
       init_args:
@@ -119,8 +119,8 @@ model:
       prefer_parallel_sampling: true
     langevin_sampler:
       _target_: src.samplers.langevin_sampler.LangevinSampler
-      step_size: 0.03
-      noise_scale: 1.0
+      step_size: 0.005
+      noise_scale: 0.5
       num_steps: 10
       clamp_range: [-1.0, 1.0]
       detach_between_steps: true
@@ -141,8 +141,9 @@ model:
       clamp_range: [-1.0, 1.0]
 
     base_lr_joint: 4.5e-07
-    base_lr_prior: 4.5e-07
+    base_lr_prior: 1e-06
     base_lr_proposal: 4.5e-07
+    weight_decay_prior: 0.0001
     num_mis_steps: 10
     cache_start_epoch: 1000
     global_only_steps: 20000

@@ -168,7 +168,7 @@ class JointNegativeSampler(BaseSampler):
         h_new = self.h_sampler.sample(
             x_new,
             idx=None,
-            num_steps=1,
+            num_steps=10,
             parallel=False,
             return_all=False,
             strategy="none",

@@ -59,16 +59,16 @@ PYTHONPATH=. python scripts/train.py fit --config ./configs/jsa/categorical_prio
 查看 TensorBoard 日志：
 
 ``` bash
-tensorboard --logdir=egs/cifar10/jsa/categorical_prior_conv/2026-03-27_15-03-48 --port=6024
+tensorboard --logdir=egs/cifar10/perceptual_jsa/cifar10_stage3_full_ebm --port=6024
 ```
 
 ``` bash
 
-tensorboard --logdir=egs/cifar10/perceptual_jsa/cifar10_stage1_decoder/2026-03-29_12-47-24 --port 6023
+tensorboard --logdir=egs/cifar10/perceptual_jsa/cifar10_stage1_decoder --port 6023
 ```
 
 ``` bash
-tensorboard --logdir=egs/cifar10/perceptual_jsa/cifar10_stage2_prior --port=6024
+tensorboard --logdir=egs/cifar10/perceptual_jsa/cifar10_stage2_prior --port=6025
 ```
 tensorboard --logdir=egs/continuous_mnist/categorical_prior_conv/base_version --port=6010
 

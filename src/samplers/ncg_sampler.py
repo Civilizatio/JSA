@@ -77,8 +77,8 @@ class NCGSampler(BaseSampler):
         distortion_model, _ = self._get_decoder_and_embeddings()
         embedded_h = distortion_model.embed_latent(h).detach().requires_grad_(True)
         x_hat = distortion_model.decode_from_embedded_latent(embedded_h)
-        distortion = distortion_model.distortion_from_reconstruction(x, x_hat)
-        grad = torch.autograd.grad(distortion.sum(), embedded_h, only_inputs=True)[0]
+        out = distortion_model.distortion_from_reconstruction(x, x_hat)
+        grad = torch.autograd.grad(out.distortion.sum(), embedded_h, only_inputs=True)[0]
         return grad
 
     def _site_scores(

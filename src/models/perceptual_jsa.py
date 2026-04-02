@@ -98,6 +98,7 @@ class PerceptualJSA(JSA):
         base_lr_joint: float = 1e-4,
         base_lr_prior: float = 1e-4,
         base_lr_proposal: float = 1e-4,
+        weight_decay_prior: float = 0.01,
         num_mis_steps: int = 3,
         cache_start_epoch: int = 0,
         init_from_ckpt: str = None,
@@ -132,6 +133,7 @@ class PerceptualJSA(JSA):
         )
         self.base_lr_prior = base_lr_prior
         self.lr_prior = base_lr_prior
+        self.weight_decay_prior = weight_decay_prior
 
         self.force_stage = PerceptualTrainingStage.from_value(force_stage)
         if auto_stage_epochs is None:
@@ -182,7 +184,7 @@ class PerceptualJSA(JSA):
             "proposal_model": self.proposal_model,
         }
         # optimizer_slots keeps track of which optimizer index corresponds to which model component, since not all components may be present and the optimizers list is constructed dynamically in configure_optimizers
-        #! This is a very important detail: you should not change it to a dictionary that directly stores the optimizers, 
+        #! This is a very important detail: you should not change it to a dictionary that directly stores the optimizers,
         #! because the `glboal_step` is updated when we call `self.optimizers()` and we want to make sure that the correct optimizer is stepped for each component in each training stage, even as the optimizers are created dynamically based on which model components are present.
         self._optimizer_slots = {
             "distortion": None,
@@ -238,10 +240,6 @@ class PerceptualJSA(JSA):
     # ------------------------------------------------------------------
     # Logging / optimizer helpers
     # ------------------------------------------------------------------
-    def on_fit_start(self):
-        # Call base class to properly initialize the logger and load 'init_from_ckpt' weights.
-        # The base class now automatically triggers self.on_load_checkpoint(ckpt) for samplers.
-        super().on_fit_start()
 
     def on_train_start(self):
         super().on_train_start()
@@ -292,12 +290,51 @@ class PerceptualJSA(JSA):
             self._optimizer_slots["distortion"] = len(optimizers)
             optimizers.append(torch.optim.Adam(distortion_params, lr=self.lr_joint))
 
-        prior_params = [
-            p for p in self.joint_model.prior_model.parameters() if p.requires_grad
-        ]
-        if len(prior_params) > 0:
-            self._optimizer_slots["prior"] = len(optimizers)
-            optimizers.append(torch.optim.Adam(prior_params, lr=self.lr_prior))
+        # Prior parameter grouping for AdamW
+        if hasattr(self.joint_model.prior_model, "parameters"):
+            prior_params = list(self.joint_model.prior_model.parameters())
+            if len([p for p in prior_params if p.requires_grad]) > 0:
+                self._optimizer_slots["prior"] = len(optimizers)
+                
+                decay_params = []
+                no_decay_params = []
+                
+                # Modules that should have weight decay applied to their parameters (e.g., Linear layers)
+                import torch.nn as nn
+                whitelist_weight_modules = (nn.Linear,)
+                # Modules that should not have weight decay applied to their parameters (e.g., LayerNorm, Embedding)
+                blacklist_weight_modules = (nn.LayerNorm, nn.Embedding)
+                
+                name_to_module = {n: m for n, m in self.joint_model.prior_model.named_modules()}
+                
+                for name, param in self.joint_model.prior_model.named_parameters():
+                    if not param.requires_grad:
+                        continue
+                        
+                    if name.endswith("pos_emb"):
+                        no_decay_params.append(param)
+                        continue
+                        
+                    if name.endswith("bias"):
+                        no_decay_params.append(param)
+                        continue
+                        
+                    parent_name = ".".join(name.split(".")[:-1]) if "." in name else ""
+                    parent_module = name_to_module.get(parent_name, None)
+                    
+                    if isinstance(parent_module, blacklist_weight_modules):
+                        no_decay_params.append(param)
+                    elif isinstance(parent_module, whitelist_weight_modules) and name.endswith("weight"):
+                        decay_params.append(param)
+                    else:
+                        no_decay_params.append(param)
+                        
+                optim_groups = [
+                    {"params": decay_params, "weight_decay": self.weight_decay_prior},
+                    {"params": no_decay_params, "weight_decay": 0.0},
+                ]
+                
+                optimizers.append(torch.optim.AdamW(optim_groups, lr=self.lr_prior, betas=(0.9, 0.95)))
 
         proposal_params = [
             p for p in self.proposal_model.parameters() if p.requires_grad
@@ -306,9 +343,8 @@ class PerceptualJSA(JSA):
             self._optimizer_slots["proposal"] = len(optimizers)
             optimizers.append(torch.optim.Adam(proposal_params, lr=self.lr_proposal))
 
-    
         return optimizers
-    
+
     def _optimizer_dict(self) -> Dict[str, torch.optim.Optimizer]:
         optimizers = self.optimizers()
         if not isinstance(optimizers, (list, tuple)):
@@ -319,7 +355,11 @@ class PerceptualJSA(JSA):
                 result[name] = optimizers[idx]
         return result
 
-    def _log_component_summary(self, prefix: str, summary: Dict[str, torch.Tensor] | dataclasses.dataclass | Any):
+    def _log_component_summary(
+        self,
+        prefix: str,
+        summary: Dict[str, torch.Tensor] | dataclasses.dataclass | Any,
+    ):
         if dataclasses.is_dataclass(summary):
             summary = dataclasses.asdict(summary)
         for key, value in summary.items():
@@ -327,14 +367,18 @@ class PerceptualJSA(JSA):
                 value = torch.tensor(float(value), device=self.device)
             # IMPORTANT: always detach tensors before logging to avoid memory leaks
             self.log(
-                f"{prefix}/{key}", value.detach(), prog_bar=False, logger=True, sync_dist=False
+                f"{prefix}/{key}",
+                value.detach(),
+                prog_bar=False,
+                logger=True,
+                sync_dist=False,
             )
 
     # ------------------------------------------------------------------
     # Sampling helpers
     # ------------------------------------------------------------------
     def _sample_positive_h(self, x, idx, stage):
-        """Samples positive latent codes h for a given input x and training stage. 
+        """Samples positive latent codes h for a given input x and training stage.
         The sampling strategy can depend on the stage, allowing for different proposal mechanisms in different stages of training.
         """
         if hasattr(self.joint_model, "set_stage"):
@@ -349,10 +393,10 @@ class PerceptualJSA(JSA):
         )
 
     def _default_negative_sample(self, x_real, h_pos):
-        """ Default negative sampling strategy for stage 3 when no joint_negative_sampler is provided. 
-        This consists of alternating updates to x and h, where x is updated with Langevin dynamics and h is updated with the MIS sampler and optional NCG sampler. 
+        """Default negative sampling strategy for stage 3 when no joint_negative_sampler is provided.
+        This consists of alternating updates to x and h, where x is updated with Langevin dynamics and h is updated with the MIS sampler and optional NCG sampler.
         The number of rounds of updates is controlled by `stage3_negative_rounds`.
-        
+
         NOTE:x is initialized by adding small Gaussian noise to the real x, and h is initialized from the positive sample.
         """
         if self.langevin_sampler is None:
@@ -381,7 +425,7 @@ class PerceptualJSA(JSA):
     # Training loop
     # ------------------------------------------------------------------
     def training_step(self, batch, batch_idx):
-        
+
         stage = self._apply_runtime_stage()
         x = self.get_input(batch, JsaDataset.IMAGE_KEY)
         idx = self.get_input(batch, JsaDataset.INDEX_KEY)
@@ -397,7 +441,7 @@ class PerceptualJSA(JSA):
         if stage == PerceptualTrainingStage.DECODER_PRETRAIN:
             opt_dist = optimizers["distortion"]
             opt_dist.zero_grad()
-            loss_joint_out:JointLossOutput = self.joint_model.get_loss(
+            loss_joint_out: JointLossOutput = self.joint_model.get_loss(
                 x,
                 h_pos,
                 stage=stage,
@@ -442,60 +486,69 @@ class PerceptualJSA(JSA):
             return {"loss_prior": loss_prior.detach()}
 
         # Stage 3: full energy-based training with negative phase.
-        if self.joint_negative_sampler is not None:
-            x_neg, h_neg = self.joint_negative_sampler.sample(x, h_pos=h_pos)
-        else:
-            x_neg, h_neg = self._default_negative_sample(x, h_pos)
+        if stage == PerceptualTrainingStage.FULL_EBM:
+            if self.joint_negative_sampler is not None:
+                x_neg, h_neg = self.joint_negative_sampler.sample(x, h_pos=h_pos)
+            else:
+                x_neg, h_neg = self._default_negative_sample(x, h_pos)
 
-        opt_dist = optimizers.get("distortion")
-        opt_prior = optimizers.get("prior")
-        if opt_dist is not None:
-            opt_dist.zero_grad()
-        if opt_prior is not None:
-            opt_prior.zero_grad()
+            opt_dist = optimizers.get("distortion")
+            opt_prior = optimizers.get("prior")
+            if opt_dist is not None:
+                opt_dist.zero_grad()
+            if opt_prior is not None:
+                opt_prior.zero_grad()
 
-        pos_energy_all, pos_components = self.joint_model.energy_multiple_samples(
-            x, h_pos, stage=stage, return_components=True
-        )
-        pos_energy = pos_energy_all.mean()
-        neg_energy, neg_components = self.joint_model.energy(
-            x_neg, h_neg, stage=stage, return_components=True
-        )
-        neg_energy = neg_energy.mean()
-        loss_joint = pos_energy - neg_energy
-        self.manual_backward(loss_joint)
-        if opt_dist is not None:
-            opt_dist.step()
-        if opt_prior is not None:
-            opt_prior.step()
+            out: EnergyOutput = self.joint_model.energy_multiple_samples(
+                x, h_pos, stage=stage
+            )
+            pos_energy_all, pos_components = out.energy, out.components
+            pos_energy = pos_energy_all.mean()
+            out: EnergyOutput = self.joint_model.energy(x_neg, h_neg, stage=stage)
+            neg_energy, neg_components = out.energy, out.components
+            neg_energy = neg_energy.mean()
 
-        if self.train_proposal_in_stage3 and "proposal" in optimizers:
-            opt_prop = optimizers["proposal"]
-            opt_prop.zero_grad()
-            loss_prop = self.proposal_model.get_loss(h_pos, x)
-            self.manual_backward(loss_prop)
-            opt_prop.step()
-        else:
-            loss_prop = zero
+            scale_factor = (
+                x.numel() / x.shape[0]
+            )  # Scale the loss by the number of elements per sample to keep it invariant to batch size
+            loss_joint_unscaled = pos_energy - neg_energy
+            loss_joint = loss_joint_unscaled / scale_factor
+            self.manual_backward(loss_joint)
+            if opt_dist is not None:
+                opt_dist.step()
+            if opt_prior is not None:
+                opt_prior.step()
 
-        self.log("train/loss_joint", loss_joint, prog_bar=True)
-        self.log("train/loss_positive_energy", pos_energy, prog_bar=True)
-        self.log("train/loss_negative_energy", neg_energy, prog_bar=True)
-        self.log("train/loss_proposal", loss_prop, prog_bar=True)
-        self._log_component_summary(
-            "train/positive",
-            {key: value.mean() for key, value in pos_components.items()},
-        )
-        self._log_component_summary(
-            "train/negative",
-            {key: value.mean() for key, value in neg_components.items()},
-        )
-        return {
-            "loss_joint": loss_joint.detach(),
-            "loss_proposal": loss_prop.detach(),
-            "positive_energy": pos_energy.detach(),
-            "negative_energy": neg_energy.detach(),
-        }
+            if self.train_proposal_in_stage3 and "proposal" in optimizers:
+                opt_prop = optimizers["proposal"]
+                opt_prop.zero_grad()
+                loss_prop = self.proposal_model.get_loss(h_pos, x)
+                self.manual_backward(loss_prop)
+                opt_prop.step()
+            else:
+                loss_prop = zero
+
+            self.log("train/loss_joint", loss_joint, prog_bar=True)
+            self.log("train/loss_positive_energy", pos_energy, prog_bar=True)
+            self.log("train/loss_negative_energy", neg_energy, prog_bar=True)
+            self.log("train/loss_proposal", loss_prop, prog_bar=True)
+            self._log_component_summary(
+                "train/positive",
+                {key: value.mean() for key, value in pos_components.items()},
+            )
+            self._log_component_summary(
+                "train/negative",
+                {key: value.mean() for key, value in neg_components.items()},
+            )
+            return {
+                "loss_joint": loss_joint.detach(),
+                "loss_proposal": loss_prop.detach(),
+                "positive_energy": pos_energy.detach(),
+                "negative_energy": neg_energy.detach(),
+            }
+
+        #! If the stage is somehow not recognized (which shouldn't happen), return an empty dict.
+        return {}
 
     def on_train_batch_end(self, outputs, batch, batch_idx):
         acceptance_rate = self.sampler.get_acceptance_rate()
@@ -505,7 +558,7 @@ class PerceptualJSA(JSA):
             torch.tensor(float(self._resolve_stage()), device=self.device),
             prog_bar=False,
         )
-  
+
     # ------------------------------------------------------------------
     # Validation
     # ------------------------------------------------------------------
@@ -541,17 +594,19 @@ class PerceptualJSA(JSA):
             self.log(f"valid/{key}", value.mean(), prog_bar=False, sync_dist=True)
 
         if hasattr(self.joint_model.prior_model, "analyze"):
-            prior_stats: PriorAnalysisOutput = self.joint_model.prior_model.analyze(h_last)
-            
+            prior_stats: PriorAnalysisOutput = self.joint_model.prior_model.analyze(
+                h_last
+            )
+
             for key, value in dataclasses.asdict(prior_stats).items():
                 self.log(f"valid/{key}", value, prog_bar=False, sync_dist=True)
-    
+
     # ------------------------------------------------------------------
     # Checkpoint extras
     # ------------------------------------------------------------------
     def on_save_checkpoint(self, checkpoint):
         super().on_save_checkpoint(checkpoint)
-            
+
         if self.joint_negative_sampler is not None:
             checkpoint["joint_negative_sampler_state"] = (
                 self.joint_negative_sampler.state_dict()
@@ -572,14 +627,16 @@ class PerceptualJSA(JSA):
     # ------------------------------------------------------------------
     @torch.no_grad()
     def safe_decode(self, h):
-        """Decodes latent codes h into images, safely handling any out-of-bounds tokens 
+        """Decodes latent codes h into images, safely handling any out-of-bounds tokens
         (like the sos_token from the prior model) by clamping them to the valid range.
         """
         if hasattr(self.proposal_model, "num_categories"):
             num_categories = self.proposal_model.num_categories
             if isinstance(num_categories, int):
                 h = torch.clamp(h, min=0, max=num_categories - 1)
-            elif isinstance(num_categories, (list, tuple)) and h.shape[-1] == len(num_categories):
+            elif isinstance(num_categories, (list, tuple)) and h.shape[-1] == len(
+                num_categories
+            ):
                 h_clamped = h.clone()
                 for i, max_c in enumerate(num_categories):
                     h_clamped[..., i] = torch.clamp(h[..., i], min=0, max=max_c - 1)
@@ -596,25 +653,28 @@ class PerceptualJSA(JSA):
         callback=lambda k: None,
         **kwargs,
     ):
-        """Implement the logic to generate and log images during validation. 
+        """Implement the logic to generate and log images during validation.
         In Stage 1, it logs inputs and reconstructions.
         In Stage 2 and Stage 3, it adds generated samples from the prior model.
         """
         log = super().log_images(batch, **kwargs)
-        
+
         stage = self._apply_runtime_stage()
-        
+
         # Only in Stage 2 (PRIOR_PRETRAIN) and Stage 3 (FULL_EBM) do we consider prior samples
-        if stage in [PerceptualTrainingStage.PRIOR_PRETRAIN, PerceptualTrainingStage.FULL_EBM]:
+        if stage in [
+            PerceptualTrainingStage.PRIOR_PRETRAIN,
+            PerceptualTrainingStage.FULL_EBM,
+        ]:
             prior_model = getattr(self.joint_model, "prior_model", None)
-            
+
             if prior_model is not None and hasattr(prior_model, "sample"):
                 x = log["inputs"]
-                
+
                 # To get the spatial shape, we encode the current image using proposal model
                 h_encoded = self.proposal_model.encode(x)
                 spatial_shape = h_encoded.shape[1:-1]
-                
+
                 # 1. Generate samples from scratch
                 h_sampled = prior_model.sample(
                     batch_size=x.shape[0],
@@ -622,11 +682,11 @@ class PerceptualJSA(JSA):
                     device=x.device,
                     temperature=temperature,
                     top_k=top_k,
-                    top_p=top_p
+                    top_p=top_p,
                 )
                 x_sampled = self.safe_decode(h_sampled)
                 log["samples_from_scratch"] = x_sampled
-                
+
                 # 2. Generate deterministic samples (greedy decoding: temperature=0)
                 h_deterministic = prior_model.sample(
                     batch_size=x.shape[0],
@@ -634,12 +694,9 @@ class PerceptualJSA(JSA):
                     device=x.device,
                     temperature=0.0,
                     top_k=None,
-                    top_p=1.0
+                    top_p=1.0,
                 )
                 x_deterministic = self.safe_decode(h_deterministic)
                 log["samples_deterministic"] = x_deterministic
-                
-        return log
-            
-   
 
+        return log

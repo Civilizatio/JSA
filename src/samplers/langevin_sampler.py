@@ -50,8 +50,8 @@ class LangevinSampler(BaseSampler):
     def step(self, x: Tensor, h: Tensor) -> Tensor:
         x_in = x.detach() if self.detach_between_steps else x
         x_in = x_in.requires_grad_(True)
-        distortion = self.joint_model.distortion(x_in, h)
-        grad = torch.autograd.grad(distortion.sum(), x_in, only_inputs=True)[0]
+        out = self.joint_model.distortion(x_in, h)
+        grad = torch.autograd.grad(out.distortion.sum(), x_in, only_inputs=True)[0]
         noise = torch.randn_like(x_in) * self.step_size * self.noise_scale
         x_next = x_in - 0.5 * (self.step_size**2) * grad + noise
         x_next = self._clamp(x_next)
