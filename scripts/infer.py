@@ -447,6 +447,43 @@ class Visualizer(InferenceModule):
         )
         self.logger.info(f"Saved visualization images to {self.save_dir}")
 
+class ProposalSharpnessTracker(InferenceModule):
+    """Tracks how 'sharp' the proposal networks / categorical heads are."""
+    def __init__(self):
+        self.stats = {"sum_mean_max_prob": 0.0, "sum_entropy": 0.0, "batches": 0}
+
+    def setup(self, device, logger, save_dir):
+        self.logger = logger
+        self.device = device
+        self.model = None
+
+    def set_model(self, model):
+        self.model = model
+
+    def update(self, batch, outputs):
+        if self.model is None or not hasattr(self.model, "proposal_model"):
+            return
+        
+        # Check if the proposal model supports the monitoring method we added
+        prop_model = self.model.proposal_model
+        if hasattr(prop_model, "get_monitoring_stats"):
+            x = outputs["x"]
+            with torch.no_grad():
+                stats = prop_model.get_monitoring_stats(x)
+                if "proposal_mean_max_prob" in stats and "proposal_entropy" in stats:
+                    self.stats["sum_mean_max_prob"] += stats["proposal_mean_max_prob"].item()
+                    self.stats["sum_entropy"] += stats["proposal_entropy"].item()
+                    self.stats["batches"] += 1
+
+    def finalize(self):
+        if self.stats["batches"] > 0:
+            avg_prob = self.stats["sum_mean_max_prob"] / self.stats["batches"]
+            avg_ent = self.stats["sum_entropy"] / self.stats["batches"]
+            self.logger.info("="*60)
+            self.logger.info("Proposal Sharpness Statistics:")
+            self.logger.info(f"  Average Class Max Probability: {avg_prob:.4f}")
+            self.logger.info(f"  Average Distribution Entropy:  {avg_ent:.4f}")
+            self.logger.info("="*60)
 
 class ExtraStatsTracker(InferenceModule):
     
@@ -579,7 +616,9 @@ def prepare_modules(run_config, codebook_size, class_names):
             spatial_shape=track_spatial_shape,  # Example spatial shape, modify as needed
         )
         modules.append(codebook_tracker)
-
+    # Proposal Sharpness Tracker (Stage 1 / VQ Evaluation)
+    if run_config.get("track_proposal_sharpness", True):
+        modules.append(ProposalSharpnessTracker())
     # Visualizer
     if run_config.get("visualization", True):
         visualizer = Visualizer(max_samples=10)
@@ -880,12 +919,6 @@ def main(exp_dir, config_path, checkpoint_path, run_config=None):
     logger.info("Starting inference...")
     logger.info(f"Loading model from {checkpoint_path}...")
 
-    # Load model
-    device = "cuda:7" if torch.cuda.is_available() else "cpu"
-    model = load_from_file(config_path=config_path, ckpt_path=checkpoint_path, freeze=True)
-    model = model.to(device)
-    model.eval()
-
     # Prepare test data
     with open(config_path, "r") as f:
         config = yaml.safe_load(f)
@@ -904,6 +937,40 @@ def main(exp_dir, config_path, checkpoint_path, run_config=None):
         logger.warning("test_dataloader not implemented in datamodule. Using train_dataloader instead.")
         test_loader = dm.val_dataloader()
         
+    # --- Compatibility Patch for Old Configs ---
+    # The JSA model signature has changed over time (e.g. removed sigma_controller, added sigma_scheduler)
+    # We patch the config dictionary in-memory before instantiating the model to avoid validation errors
+    # during load_from_file / load_from_config
+    if "model" in config and "init_args" in config["model"]:
+        model_args = config["model"]["init_args"]
+        if "sigma_controller" in model_args:
+            logger.info("Compatibility patch: Removing deprecated 'sigma_controller' from config.")
+            del model_args["sigma_controller"]
+            
+        # Add any other missing default args here if necessary to pass LightningCLI strict validation
+        if "global_only_steps" not in model_args:
+            model_args["global_only_steps"] = 10000
+        if "block_strategy_prob" not in model_args:
+            model_args["block_strategy_prob"] = 0.5
+            
+        # Write the patched config to a temporary file
+        temp_config_path = config_path + ".tmp.yaml"
+        with open(temp_config_path, "w") as f:
+            yaml.dump(config, f)
+        config_path_to_load = temp_config_path
+    else:
+        config_path_to_load = config_path
+    # ---------------------------------------------
+
+    # Load model
+    device = "cuda:7" if torch.cuda.is_available() else "cpu"
+    model = load_from_file(config_path=config_path_to_load, ckpt_path=checkpoint_path, freeze=True)
+    model = model.to(device)
+    model.eval()
+    
+    # Cleanup temp config
+    if config_path_to_load.endswith(".tmp.yaml") and os.path.exists(config_path_to_load):
+        os.remove(config_path_to_load)
 
     # Get model info
     model_type, num_latent_vars, num_categories, codebook_size = get_model_info(model)
@@ -951,9 +1018,9 @@ if __name__ == "__main__":
 
     dir_list = [
         # "egs/cifar10/jsa/categorical_prior_conv/2026-01-15_15-41-30",
-        # "egs/cifar10/jsa/categorical_prior_conv/2026-01-27_22-00-33",
+        "egs/cifar10/jsa/categorical_prior_conv/2026-01-15_15-43-39",
         # "egs/cifar10/vqgan/vq_gan_cifar10/2026-02-05_21-02-55",
-        "egs/imagenet/vqgan/vq_gan_imagenet/2026-03-01_23-59-54",
+        # "egs/cifar10/perceptual_jsa/cifar10_stage1_decoder/2026-03-29_12-47-24",
         # "egs/imagenet/jsa/lightning_logs/2026-02-25_15-22-44",
     ]
     target_class_names = ["cat"]
@@ -963,7 +1030,8 @@ if __name__ == "__main__":
         "visualization": True,
         "codebook_global": True,
         "codebook_per_class": False,
-        "codebook_spatial_shape": (16, 16),  # Example spatial shape
+        "codebook_spatial_shape": (8, 8),  # Example spatial shape
+        "track_proposal_sharpness": True, # Tracks entropy and max prob of the proposal matching
         "track_extras": False,  # Whether to track extra stats specific to JSA/VQModel
     }
 

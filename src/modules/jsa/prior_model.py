@@ -32,12 +32,12 @@ class UniformPriorEnergy(nn.Module):
         super().__init__()
         self.num_categories = list(num_categories) if num_categories is not None else None
 
-    def forward(self, h: Tensor) -> Tensor:
+    def forward(self, h: Tensor, pkeep: float = 1.0) -> Tensor:
         """Returns a zero energy for any input tensor h."""
         return torch.zeros(h.shape[0], device=h.device, dtype=torch.float32)
 
-    def get_loss(self, h: Tensor) -> Tensor:
-        return self.forward(h).mean()
+    def get_loss(self, h: Tensor, pkeep: float = 1.0) -> Tensor:
+        return self.forward(h, pkeep=pkeep).mean()
 
     def analyze(self, h: Tensor) -> PriorAnalysisOutput:
         zero = torch.tensor(0.0, device=h.device)
@@ -150,9 +150,23 @@ class GPTPriorEnergy(nn.Module):
         inputs = torch.cat([bos, tokens[:, :-1]], dim=1)
         return inputs, tokens
 
-    def forward(self, h: Tensor) -> Tensor:
+    def forward(self, h: Tensor, pkeep: float = 1.0) -> Tensor:
         tokens, _ = self._to_token_sequence(h)
         inputs, targets = self._prepare_teacher_forcing(tokens)
+        
+        if self.training and pkeep < 1.0:
+            # Apply token dropping for regularization during training
+            mask = torch.bernoulli(
+                pkeep * torch.ones(inputs.shape, device=inputs.device)
+            ).bool()
+            # Keep BOS token (the first token) intact
+            mask[:, 0] = True
+            
+            random_tokens = torch.randint_like(
+                inputs, low=0, high=self.vocab_size
+            )
+            inputs = torch.where(mask, inputs, random_tokens)
+
         logits = self._forward_logits(inputs)
         if logits.shape[:2] != targets.shape:
             raise RuntimeError(
@@ -162,16 +176,16 @@ class GPTPriorEnergy(nn.Module):
         token_log_probs = log_probs.gather(dim=-1, index=targets.unsqueeze(-1)).squeeze(-1)
         return -token_log_probs.sum(dim=1)
 
-    def get_loss(self, h: Tensor) -> Tensor:
+    def get_loss(self, h: Tensor, pkeep: float = 1.0) -> Tensor:
         # The training loop uses a single latent sample in stages 2 and 3. We still support
         # tensors with an explicit sample dimension of shape [B, S, ..., num_latent_vars].
         if h.dim() >= 5:
             batch_size, num_samples = h.shape[0], h.shape[1]
             flat_h = h.reshape(batch_size * num_samples, *h.shape[2:])
             seq_len = math.prod(flat_h.shape[1:-1])
-            return (self.forward(flat_h) / seq_len).mean()
+            return (self.forward(flat_h, pkeep=pkeep) / seq_len).mean()
         seq_len = math.prod(h.shape[1:-1])
-        return (self.forward(h) / seq_len).mean()
+        return (self.forward(h, pkeep=pkeep) / seq_len).mean()
 
     @torch.no_grad()
     def analyze(self, h: Tensor) -> PriorAnalysisOutput:

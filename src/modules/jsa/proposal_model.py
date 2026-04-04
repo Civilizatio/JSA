@@ -183,6 +183,31 @@ class ProposalModelCategorical(BaseProposalModel):
         )  # List of [B, ..., num_categories_i]
         return split_logits
 
+    @torch.no_grad()
+    def get_monitoring_stats(self, x):
+        """[MONITORING] Monitor the expected sharpness of the Proposal output.
+        Returns a dict of metrics:
+        - min_prob/max_prob/mean_max_prob: Tells you how deterministic the model is. 
+          If mean_max_prob is close to 1.0, the model is very sharp.
+        - entropy: The average Shannon entropy of the token distribution (lower=sharper).
+        """
+        split_logits = self.forward(x)
+        stats = {}
+        
+        # Consider only the first latent variable group to keep logs manageable
+        logits = split_logits[0]  # [B, ..., num_categories]
+        probs = torch.softmax(logits, dim=-1)  # [B, ..., num_categories]
+        max_probs, _ = torch.max(probs, dim=-1)  # [B, ...]
+        
+        # Calculate Shannon entropy
+        log_probs = torch.log_softmax(logits, dim=-1)
+        entropy = -(probs * log_probs).sum(dim=-1)  # [B, ...]
+        
+        stats["proposal_mean_max_prob"] = max_probs.mean()
+        stats["proposal_entropy"] = entropy.mean()
+        
+        return stats
+
     def sample_latent(self, x, num_samples=1, return_logits=False):
         """Sample h ~ q(h|x)
 

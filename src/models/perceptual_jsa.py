@@ -113,6 +113,7 @@ class PerceptualJSA(JSA):
         train_proposal_in_stage1: bool = True,
         train_proposal_in_stage3: bool = True,
         num_validation_mis_steps: Optional[int] = None,
+        pkeep: float = 1.0,
     ):
         super().__init__(
             joint_model=joint_model,
@@ -175,6 +176,8 @@ class PerceptualJSA(JSA):
             if joint_negative_sampler is not None
             else None
         )
+
+        self.pkeep = float(pkeep)
 
         self.grad_norm_modules = {
             "distortion_model": getattr(
@@ -383,6 +386,13 @@ class PerceptualJSA(JSA):
         """
         if hasattr(self.joint_model, "set_stage"):
             self.joint_model.set_stage(stage)
+
+        # In Stage 2, the prior model prefers deterministic codes (argmax)
+        if stage == PerceptualTrainingStage.PRIOR_PRETRAIN:
+            h = self.encode(x)
+            # Add a sample dimension since the pipeline expects [B, num_samples, ...]
+            return h.unsqueeze(1)
+
         return self.sampler.sample(
             x,
             idx=idx,
@@ -465,6 +475,12 @@ class PerceptualJSA(JSA):
             self.log("train/loss_joint", loss_joint, prog_bar=True)
             self.log("train/loss_proposal", loss_prop, prog_bar=True)
             self._log_component_summary("train", summary)
+            
+            # --- [MONITORING] Track internal Proposal sharpness ---
+            if hasattr(self.proposal_model, "get_monitoring_stats"):
+                proposal_stats = self.proposal_model.get_monitoring_stats(x)
+                self._log_component_summary("train/monitoring", proposal_stats)
+                
             return {
                 "loss_joint": loss_joint.detach(),
                 "loss_proposal": loss_prop.detach(),
@@ -475,7 +491,8 @@ class PerceptualJSA(JSA):
             opt_prior = optimizers["prior"]
             opt_prior.zero_grad()
             h_for_prior = self._strip_sample_dim(h_pos)
-            loss_prior = self.joint_model.prior_model.get_loss(h_for_prior)
+            # Use pkeep trick during prior pretraining
+            loss_prior = self.joint_model.prior_model.get_loss(h_for_prior, pkeep=self.pkeep)
             self.manual_backward(loss_prior)
             opt_prior.step()
 
@@ -540,6 +557,13 @@ class PerceptualJSA(JSA):
                 "train/negative",
                 {key: value.mean() for key, value in neg_components.items()},
             )
+            
+            # --- [MONITORING] Track internal Proposal sharpness ---
+            if hasattr(self.proposal_model, "get_monitoring_stats"):
+                proposal_stats = self.proposal_model.get_monitoring_stats(x)
+                self._log_component_summary("train/monitoring", proposal_stats)
+            # ----------------------------------------------------
+
             return {
                 "loss_joint": loss_joint.detach(),
                 "loss_proposal": loss_prop.detach(),

@@ -6,7 +6,7 @@ model:
     force_stage: full_ebm
     num_mis_steps: 8
     parallel_mis_sampling: true
-    init_from_ckpt: ./egs/cifar10/perceptual_jsa/cifar10_stage2_prior/2026-03-31_10-14-16/checkpoints/step=100000-epoch=001020.ckpt
+    init_from_ckpt: ./egs/cifar10/perceptual_jsa/cifar10_stage2_prior/2026-04-03_10-03-35/checkpoints/step=039491-epoch=000100.ckpt
     stage3_negative_rounds: 1
     num_validation_mis_steps: 8
     joint_negative_sampler:
