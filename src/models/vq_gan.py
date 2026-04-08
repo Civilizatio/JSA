@@ -6,6 +6,7 @@ from src.modules.vqvae.vq_adaptor import ConvEncoder, ConvDecoder
 from src.modules.vqvae.quantize import VectorQuantizer2 as VectorQuantizer
 from src.modules.losses.vqperceptual import VQLPIPSWithDiscriminator
 from src.utils.file_logger import get_file_logger
+from src.utils.module_utils import get_optim_groups
 
 
 class VQModel(LightningModule):
@@ -16,6 +17,8 @@ class VQModel(LightningModule):
         loss: VQLPIPSWithDiscriminator,
         quantizer: VectorQuantizer,
         base_learning_rate=2e-4,
+        weight_decay_ae=0.0,
+        weight_decay_disc=0.0,
         ckpt_path=None,
         ignore_keys=[],
         image_key="image",
@@ -30,6 +33,8 @@ class VQModel(LightningModule):
         self.quantizer: VectorQuantizer = quantizer
         self.base_learning_rate = base_learning_rate
         self.learning_rate = base_learning_rate
+        self.weight_decay_ae = weight_decay_ae
+        self.weight_decay_disc = weight_decay_disc
         self.dataset_key = JsaDataset.IMAGE_KEY
 
         self.quant_conv = torch.nn.Conv2d(
@@ -244,22 +249,22 @@ class VQModel(LightningModule):
                 f"Configuring optimizers with effective batch size {effective_batch_size} and learning rate {lr}"
             )
 
-        ae_params = (
-            list(self.encoder.parameters())
-            + list(self.decoder.parameters())
-            + list(self.quantizer.parameters())
-            + list(self.quant_conv.parameters())
-            + list(self.post_quant_conv.parameters())
-        )
+        ae_optim_groups = []
+        ae_optim_groups.extend(get_optim_groups(self.encoder, self.weight_decay_ae))
+        ae_optim_groups.extend(get_optim_groups(self.decoder, self.weight_decay_ae))
+        ae_optim_groups.extend(get_optim_groups(self.quantizer, self.weight_decay_ae))
+        ae_optim_groups.extend(get_optim_groups(self.quant_conv, self.weight_decay_ae))
+        ae_optim_groups.extend(get_optim_groups(self.post_quant_conv, self.weight_decay_ae))
 
-        ae_params = [p for p in ae_params if p.requires_grad]
-        opt_ae = torch.optim.Adam(
-            ae_params,
+        opt_ae = torch.optim.AdamW(
+            ae_optim_groups,
             lr=lr,
             betas=(0.5, 0.9),
         )
-        opt_disc = torch.optim.Adam(
-            self.loss.discriminator.parameters(), lr=lr, betas=(0.5, 0.9)
+        
+        disc_optim_groups = get_optim_groups(self.loss.discriminator, self.weight_decay_disc)
+        opt_disc = torch.optim.AdamW(
+            disc_optim_groups, lr=lr, betas=(0.5, 0.9)
         )
         return [opt_ae, opt_disc], []
 
@@ -414,10 +419,14 @@ class _VQNoDiscModel(VQModel):
 
     def configure_optimizers(self):
         lr = self.learning_rate
-        optimizer = torch.optim.Adam(
-            list(self.encoder.parameters())
-            + list(self.decoder.parameters())
-            + list(self.quantizer.parameters()),
+        
+        ae_optim_groups = []
+        ae_optim_groups.extend(get_optim_groups(self.encoder, self.weight_decay_ae))
+        ae_optim_groups.extend(get_optim_groups(self.decoder, self.weight_decay_ae))
+        ae_optim_groups.extend(get_optim_groups(self.quantizer, self.weight_decay_ae))
+
+        optimizer = torch.optim.AdamW(
+            ae_optim_groups,
             lr=lr,
             betas=(0.5, 0.9),
         )

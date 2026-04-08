@@ -506,12 +506,12 @@ class ExtraStatsTracker(InferenceModule):
         # 这里的提取之前杂冗的 JSA / VQModel 里的逻辑
         # x, indices 等均可从 batch 或 outputs 里获取
         if isinstance(self.model, JSA):
-            pass
-            # batch = {
-            #     k: v.to(device) if isinstance(v, torch.Tensor) else v
-            #     for k, v in batch.items()
-            # }
-            # x = model.get_input(batch, JsaDataset.IMAGE_KEY)  # Assuming image key is consistent
+            # pass
+            batch = {
+                k: v.to(self.device) if isinstance(v, torch.Tensor) else v
+                for k, v in batch.items()
+            }
+            x = self.model.get_input(batch, JsaDataset.IMAGE_KEY)  # Assuming image key is consistent
             # logits = model.proposal_model(x)[0]
             # probs = torch.softmax(logits, dim=-1)
             
@@ -533,11 +533,12 @@ class ExtraStatsTracker(InferenceModule):
             #             [f"{idx}: {p:.4f}" for idx, p in zip(inds, vals)]
             #         )
             #         logger.info(f"Position ({h},{w}) Top-3: {top3_str}")
-            # if hasattr(model, "sampler"):
-            #     model.sampler.to(device)
-            #     h = model.sampler.sample(
-            #         x=x, num_steps=20, parallel=False, return_all=False
-            #     )
+            if hasattr(self.model, "sampler"):
+                self.model.sampler.to(self.device)
+                self.model.sampler.prefer_fast_acceptance = False 
+                h = self.model.sampler.sample(
+                    x=x, num_steps=20, parallel=False, return_all=False
+                )
 
             # logger.info(f"Sampled latent h with shape: {h.shape}")
             # logger.info(f"h: {h}")
@@ -1032,7 +1033,7 @@ if __name__ == "__main__":
         "codebook_per_class": False,
         "codebook_spatial_shape": (8, 8),  # Example spatial shape
         "track_proposal_sharpness": True, # Tracks entropy and max prob of the proposal matching
-        "track_extras": False,  # Whether to track extra stats specific to JSA/VQModel
+        "track_extras": True,  # Whether to track extra stats specific to JSA/VQModel
     }
 
     for exp_dir in dir_list:

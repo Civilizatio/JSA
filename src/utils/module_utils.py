@@ -4,6 +4,7 @@ import torch.nn as nn
 import importlib
 import yaml
 from jsonargparse import ArgumentParser
+from typing import List, Dict, Any
 
 
 def get_act_func_by_name(name):
@@ -84,55 +85,122 @@ def instantiate_from_config(config: dict):
         raise RuntimeError(
             f"Error instantiating class '{class_path}' with arguments {init_args}: {e}"
         )
-        
+
     return instance
 
-def load_from_config(config: dict, ckpt_path: str=None, freeze: bool = True):
+
+def get_optim_groups(
+    model: torch.nn.Module, weight_decay: float
+) -> List[Dict[str, Any]]:
+    """Separate model parameters into groups for optimization, applying weight decay to appropriate parameters.
+
+    Args:
+        model (nn.Module): The model whose parameters are to be grouped.
+        weight_decay (float): The weight decay factor to apply to the appropriate parameters.
+    Returns:
+        list: A list of parameter groups, where each group is a dictionary containing 'params' and 'weight_decay' keys.
+    """
+    whitelist_weight_modules = (
+        nn.Linear,
+        nn.Conv1d,
+        nn.Conv2d,
+        nn.Conv3d,
+        nn.ConvTranspose1d,
+        nn.ConvTranspose2d,
+        nn.ConvTranspose3d,
+    )
+    blacklist_weight_modules = (
+        nn.LayerNorm,
+        nn.BatchNorm1d,
+        nn.BatchNorm2d,
+        nn.BatchNorm3d,
+        nn.GroupNorm,
+        nn.SyncBatchNorm,
+        nn.Embedding,
+    )
+
+    decay_params = []
+    no_decay_params = []
+
+    name_to_module = {n: m for n, m in model.named_modules()}
+
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+
+        if name.endswith("pos_emb") or name.endswith("bias"):
+            no_decay_params.append(param)
+            continue
+
+        parent_name = ".".join(name.split(".")[:-1]) if "." in name else ""
+        parent_module = name_to_module.get(parent_name, None)
+
+        if isinstance(parent_module, blacklist_weight_modules):
+            no_decay_params.append(param)
+        elif isinstance(parent_module, whitelist_weight_modules) and name.endswith(
+            "weight"
+        ):
+            decay_params.append(param)
+        else:
+            decay_params.append(param)
+
+    return [
+        {"params": decay_params, "weight_decay": weight_decay},
+        {"params": no_decay_params, "weight_decay": 0.0},
+    ]
+
+
+def load_from_config(config: dict, ckpt_path: str = None, freeze: bool = True):
     """
     Initialize an object from a configuration dictionary and load its state from a checkpoint.
 
     Args:
         config (dict): A dictionary containing 'class_path' and 'init_args'.
-        ckpt_path (str): Path to the model checkpoint file.   
+        ckpt_path (str): Path to the model checkpoint file.
         freeze (bool): Whether to set the model to eval mode and freeze its parameters after loading.
     Returns:
         object: An instance of the specified class initialized with the given arguments and loaded with the checkpoint state.
-        
+
     """
     model = instantiate_from_config(config)
     if ckpt_path:
         try:
             checkpoint = torch.load(ckpt_path, map_location="cpu")
-            
-            state_dict = checkpoint.get("state_dict", checkpoint)  # Handle both cases where state_dict is nested or not
-            model.load_state_dict(state_dict,strict=False)  # Use strict=False to allow for missing keys if the checkpoint has extra keys
+
+            state_dict = checkpoint.get(
+                "state_dict", checkpoint
+            )  # Handle both cases where state_dict is nested or not
+            model.load_state_dict(
+                state_dict, strict=False
+            )  # Use strict=False to allow for missing keys if the checkpoint has extra keys
         except Exception as e:
             raise RuntimeError(f"Error loading checkpoint from '{ckpt_path}': {e}")
-        
+
     if freeze:
         model.eval()
         for param in model.parameters():
             param.requires_grad = False
-            
+
         # Monkey patch the train method to prevent accidental unfreezing
         model.train = lambda mode=True: model
     return model
-        
-        
+
+
 def load_from_file(config_path: str, ckpt_path: str, freeze: bool = True):
     """
     Initialize an object from a configuration file and load its state from a checkpoint.
 
     Args:
         config_path (str): Path to the YAML configuration file.
-        ckpt_path (str): Path to the model checkpoint file.   
+        ckpt_path (str): Path to the model checkpoint file.
         freeze (bool): Whether to set the model to eval mode and freeze its parameters after loading.
     Returns:
         object: An instance of the specified class initialized with the given arguments and loaded with the checkpoint state.
     """
     with open(config_path, "r") as f:
         config = yaml.safe_load(f)
-        
-    model_config = config.get("model", config)  # Handle both cases where model config is nested or not
-    return load_from_config(model_config, ckpt_path, freeze)
 
+    model_config = config.get(
+        "model", config
+    )  # Handle both cases where model config is nested or not
+    return load_from_config(model_config, ckpt_path, freeze)

@@ -31,6 +31,7 @@ from src.modules.jsa.prior_model import PriorAnalysisOutput
 from src.utils.file_logger import get_file_logger
 from src.utils.instantiate_utils import instantiate
 from src.utils.perceptual_stage import PerceptualTrainingStage
+from src.utils.module_utils import get_optim_groups
 
 
 class PerceptualJSA(JSA):
@@ -99,6 +100,8 @@ class PerceptualJSA(JSA):
         base_lr_prior: float = 1e-4,
         base_lr_proposal: float = 1e-4,
         weight_decay_prior: float = 0.01,
+        weight_decay_distortion: float = 0.0,
+        weight_decay_proposal: float = 0.0,
         num_mis_steps: int = 3,
         cache_start_epoch: int = 0,
         init_from_ckpt: str = None,
@@ -135,6 +138,8 @@ class PerceptualJSA(JSA):
         self.base_lr_prior = base_lr_prior
         self.lr_prior = base_lr_prior
         self.weight_decay_prior = weight_decay_prior
+        self.weight_decay_distortion = weight_decay_distortion
+        self.weight_decay_proposal = weight_decay_proposal
 
         self.force_stage = PerceptualTrainingStage.from_value(force_stage)
         if auto_stage_epochs is None:
@@ -291,60 +296,36 @@ class PerceptualJSA(JSA):
         ]
         if len(distortion_params) > 0:
             self._optimizer_slots["distortion"] = len(optimizers)
-            optimizers.append(torch.optim.Adam(distortion_params, lr=self.lr_joint))
+            optim_groups = get_optim_groups(
+                self.joint_model.distortion_model, self.weight_decay_distortion
+            )
+            optimizers.append(
+                torch.optim.AdamW(optim_groups, lr=self.lr_joint, betas=(0.9, 0.95))
+            )
 
         # Prior parameter grouping for AdamW
         if hasattr(self.joint_model.prior_model, "parameters"):
             prior_params = list(self.joint_model.prior_model.parameters())
             if len([p for p in prior_params if p.requires_grad]) > 0:
                 self._optimizer_slots["prior"] = len(optimizers)
-                
-                decay_params = []
-                no_decay_params = []
-                
-                # Modules that should have weight decay applied to their parameters (e.g., Linear layers)
-                import torch.nn as nn
-                whitelist_weight_modules = (nn.Linear,)
-                # Modules that should not have weight decay applied to their parameters (e.g., LayerNorm, Embedding)
-                blacklist_weight_modules = (nn.LayerNorm, nn.Embedding)
-                
-                name_to_module = {n: m for n, m in self.joint_model.prior_model.named_modules()}
-                
-                for name, param in self.joint_model.prior_model.named_parameters():
-                    if not param.requires_grad:
-                        continue
-                        
-                    if name.endswith("pos_emb"):
-                        no_decay_params.append(param)
-                        continue
-                        
-                    if name.endswith("bias"):
-                        no_decay_params.append(param)
-                        continue
-                        
-                    parent_name = ".".join(name.split(".")[:-1]) if "." in name else ""
-                    parent_module = name_to_module.get(parent_name, None)
-                    
-                    if isinstance(parent_module, blacklist_weight_modules):
-                        no_decay_params.append(param)
-                    elif isinstance(parent_module, whitelist_weight_modules) and name.endswith("weight"):
-                        decay_params.append(param)
-                    else:
-                        no_decay_params.append(param)
-                        
-                optim_groups = [
-                    {"params": decay_params, "weight_decay": self.weight_decay_prior},
-                    {"params": no_decay_params, "weight_decay": 0.0},
-                ]
-                
-                optimizers.append(torch.optim.AdamW(optim_groups, lr=self.lr_prior, betas=(0.9, 0.95)))
+                optim_groups = get_optim_groups(
+                    self.joint_model.prior_model, self.weight_decay_prior
+                )
+                optimizers.append(
+                    torch.optim.AdamW(optim_groups, lr=self.lr_prior, betas=(0.9, 0.95))
+                )
 
         proposal_params = [
             p for p in self.proposal_model.parameters() if p.requires_grad
         ]
         if len(proposal_params) > 0:
             self._optimizer_slots["proposal"] = len(optimizers)
-            optimizers.append(torch.optim.Adam(proposal_params, lr=self.lr_proposal))
+            optim_groups = get_optim_groups(
+                self.proposal_model, self.weight_decay_proposal
+            )
+            optimizers.append(
+                torch.optim.AdamW(optim_groups, lr=self.lr_proposal, betas=(0.9, 0.95))
+            )
 
         return optimizers
 
@@ -475,12 +456,12 @@ class PerceptualJSA(JSA):
             self.log("train/loss_joint", loss_joint, prog_bar=True)
             self.log("train/loss_proposal", loss_prop, prog_bar=True)
             self._log_component_summary("train", summary)
-            
+
             # --- [MONITORING] Track internal Proposal sharpness ---
             if hasattr(self.proposal_model, "get_monitoring_stats"):
                 proposal_stats = self.proposal_model.get_monitoring_stats(x)
                 self._log_component_summary("train/monitoring", proposal_stats)
-                
+
             return {
                 "loss_joint": loss_joint.detach(),
                 "loss_proposal": loss_prop.detach(),
@@ -492,7 +473,9 @@ class PerceptualJSA(JSA):
             opt_prior.zero_grad()
             h_for_prior = self._strip_sample_dim(h_pos)
             # Use pkeep trick during prior pretraining
-            loss_prior = self.joint_model.prior_model.get_loss(h_for_prior, pkeep=self.pkeep)
+            loss_prior = self.joint_model.prior_model.get_loss(
+                h_for_prior, pkeep=self.pkeep
+            )
             self.manual_backward(loss_prior)
             opt_prior.step()
 
@@ -557,7 +540,7 @@ class PerceptualJSA(JSA):
                 "train/negative",
                 {key: value.mean() for key, value in neg_components.items()},
             )
-            
+
             # --- [MONITORING] Track internal Proposal sharpness ---
             if hasattr(self.proposal_model, "get_monitoring_stats"):
                 proposal_stats = self.proposal_model.get_monitoring_stats(x)

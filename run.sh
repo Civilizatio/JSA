@@ -2,10 +2,10 @@
 
 
 # Parameters (Can be customized)
-ENABLE_MONITOR=true # true to enable resource monitor, false to disable
+ENABLE_MONITOR=false # true to enable resource monitor, false to disable
 LOG_FILE="train_output.log" # redirect all output to this log file
-CUDA_DEVICES=2,3,4,5 # CUDA_DEVICES=0,1,2,3 # Example for 4 GPUs
-CONFIG_PATH="configs/jsa/categorical_prior_continuous_cifar10_conv.yaml"
+CUDA_DEVICES=4,5 # CUDA_DEVICES=0,1,2,3 # Example for 4 GPUs
+CONFIG_PATH="configs/vq_gan/cifar10.yaml" # Path to your training config file
 
 
 

@@ -16,7 +16,7 @@ model:
     joint_model:
       class_path: src.modules.jsa.joint_model.JointModelCategoricalEnergy
       init_args:
-        distortion_weight: 0.5
+        distortion_weight: 1
         prior_weight: 0.5
         sample_chunk_size: 2
         default_stage: full_ebm
@@ -47,7 +47,7 @@ model:
               - class_path: src.modules.losses.perceptual_distortion.PixelLossTerm
                 init_args:
                   loss_type: l1
-                  weight: 1.0
+                  weight: 5
                   reduction: sum
             # perceptual_terms: []
             # Example perceptual term (uncomment after ensuring the torchvision weights are available locally):
@@ -71,7 +71,7 @@ model:
                 init_args:
                   use_cifar10_version: true
                   use_dropout: true
-                  weight: 1.0
+                  weight: 5
         prior_model:
           class_path: src.modules.jsa.prior_model.GPTPriorEnergy
           init_args:
@@ -140,10 +140,12 @@ model:
       init_noise_std: 0.02
       clamp_range: [-1.0, 1.0]
 
-    base_lr_joint: 4.5e-07
+    base_lr_joint: 1e-07
     base_lr_prior: 1e-06
     base_lr_proposal: 4.5e-07
+    weight_decay_distortion: 0.0001
     weight_decay_prior: 0.0001
+    weight_decay_proposal: 0.0001
     num_mis_steps: 10
     cache_start_epoch: 1000
     global_only_steps: 20000
