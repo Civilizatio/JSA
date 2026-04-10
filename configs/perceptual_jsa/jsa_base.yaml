@@ -20,6 +20,8 @@ model:
         prior_weight: 0.5
         sample_chunk_size: 2
         default_stage: full_ebm
+        distortion_temperature: 1.0
+        temperature_mode: learnable # Options: "fixed", "learnable"
         distortion_model:
           class_path: src.modules.losses.perceptual_distortion.ReconstructionDistortionModel
           init_args:
@@ -47,7 +49,7 @@ model:
               - class_path: src.modules.losses.perceptual_distortion.PixelLossTerm
                 init_args:
                   loss_type: l1
-                  weight: 5
+                  weight: 1
                   reduction: sum
             # perceptual_terms: []
             # Example perceptual term (uncomment after ensuring the torchvision weights are available locally):
@@ -71,7 +73,7 @@ model:
                 init_args:
                   use_cifar10_version: true
                   use_dropout: true
-                  weight: 5
+                  weight: 1
         prior_model:
           class_path: src.modules.jsa.prior_model.GPTPriorEnergy
           init_args:
@@ -182,7 +184,7 @@ trainer:
   callbacks:
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
-        monitor: valid/positive_energy
+        monitor: valid/distortion_total
         mode: min
         save_top_k: 3
         filename: "{step:06}-{epoch:06}"

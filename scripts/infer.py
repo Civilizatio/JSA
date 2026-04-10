@@ -944,15 +944,19 @@ def main(exp_dir, config_path, checkpoint_path, run_config=None):
     # during load_from_file / load_from_config
     if "model" in config and "init_args" in config["model"]:
         model_args = config["model"]["init_args"]
+        model_class = config["model"].get("class_path", "")
+        
         if "sigma_controller" in model_args:
             logger.info("Compatibility patch: Removing deprecated 'sigma_controller' from config.")
             del model_args["sigma_controller"]
             
         # Add any other missing default args here if necessary to pass LightningCLI strict validation
-        if "global_only_steps" not in model_args:
-            model_args["global_only_steps"] = 10000
-        if "block_strategy_prob" not in model_args:
-            model_args["block_strategy_prob"] = 0.5
+        # Only add JSA-specific arguments if the model is a JSA model
+        if "JSA" in model_class or "jsa" in model_class.lower():
+            if "global_only_steps" not in model_args:
+                model_args["global_only_steps"] = 10000
+            if "block_strategy_prob" not in model_args:
+                model_args["block_strategy_prob"] = 0.5
             
         # Write the patched config to a temporary file
         temp_config_path = config_path + ".tmp.yaml"
@@ -1019,9 +1023,9 @@ if __name__ == "__main__":
 
     dir_list = [
         # "egs/cifar10/jsa/categorical_prior_conv/2026-01-15_15-41-30",
-        "egs/cifar10/jsa/categorical_prior_conv/2026-01-15_15-43-39",
+        # "egs/cifar10/jsa/categorical_prior_conv/2026-01-15_15-43-39",
         # "egs/cifar10/vqgan/vq_gan_cifar10/2026-02-05_21-02-55",
-        # "egs/cifar10/perceptual_jsa/cifar10_stage1_decoder/2026-03-29_12-47-24",
+        "egs/cifar10/perceptual_jsa/cifar10_stage1_decoder/2026-04-09_15-00-25",
         # "egs/imagenet/jsa/lightning_logs/2026-02-25_15-22-44",
     ]
     target_class_names = ["cat"]
@@ -1032,8 +1036,8 @@ if __name__ == "__main__":
         "codebook_global": True,
         "codebook_per_class": False,
         "codebook_spatial_shape": (8, 8),  # Example spatial shape
-        "track_proposal_sharpness": True, # Tracks entropy and max prob of the proposal matching
-        "track_extras": True,  # Whether to track extra stats specific to JSA/VQModel
+        "track_proposal_sharpness": False, # Tracks entropy and max prob of the proposal matching
+        "track_extras": False,  # Whether to track extra stats specific to JSA/VQModel
     }
 
     for exp_dir in dir_list:

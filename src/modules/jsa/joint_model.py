@@ -651,6 +651,8 @@ class JointModelCategoricalEnergy(BaseJointModel):
         prior_model: nn.Module = None,
         distortion_weight: float = 1.0,
         prior_weight: float = 1.0,
+        distortion_temperature: float = 1.0,
+        temperature_mode: str = "fixed",
         sample_chunk_size: int = 8,
         default_stage=PerceptualTrainingStage.FULL_EBM,
     ):
@@ -668,8 +670,23 @@ class JointModelCategoricalEnergy(BaseJointModel):
         self.sample_chunk_size = int(sample_chunk_size)
         self.current_stage = PerceptualTrainingStage.from_value(default_stage)
 
+        if temperature_mode == "scheduled":
+            raise NotImplementedError("scheduled temperature mode is not supported yet.")
+        self.temperature_mode = temperature_mode
+        init_log_T = torch.log(torch.tensor(float(distortion_temperature)))
+        if self.temperature_mode == "learnable":
+            self.log_distortion_temperature = nn.Parameter(init_log_T)
+        elif self.temperature_mode == "fixed":
+            self.register_buffer("log_distortion_temperature", init_log_T)
+        else:
+            raise ValueError(f"Unknown temperature_mode: {temperature_mode}")
+
         # Keep a `net` attribute for backward compatibility with callbacks and summary code.
         self.net = getattr(self.distortion_model, "decoder", self.distortion_model)
+
+    @property
+    def distortion_temperature(self):
+        return torch.exp(self.log_distortion_temperature)
 
     @property
     def latent_dim(self):
@@ -725,7 +742,8 @@ class JointModelCategoricalEnergy(BaseJointModel):
         dist_out = self.distortion(x, h)
         prior = self.prior_energy(h)
         distortion_weight, prior_weight = self._component_weights(stage)
-        total = distortion_weight * dist_out.distortion + prior_weight * prior
+        
+        total = distortion_weight * (dist_out.distortion / self.distortion_temperature) + prior_weight * prior
 
         components = {
             **dist_out.components,
@@ -733,6 +751,7 @@ class JointModelCategoricalEnergy(BaseJointModel):
             "energy_total": total,
             "distortion_weight": torch.full_like(total, distortion_weight),
             "prior_weight": torch.full_like(total, prior_weight),
+            "distortion_temperature": self.distortion_temperature.expand_as(total),
         }
         return EnergyOutput(
             energy=total, reconstruction=dist_out.reconstruction, components=components
@@ -837,6 +856,13 @@ class JointModelCategoricalEnergy(BaseJointModel):
         # Dividing by data dimensionality decouples the optimization scale (learning rate)
         # from the mathematically rigid energy landscape.
         D = x.numel() / x.shape[0] if x.shape[0] > 0 else 1.0
+        
+        # Add temperature normalization term according to EBM framework
+        # to prevent temperature scaling from driving T to infinity
+        c = D * 0.8
+        regularization_term = c * self.log_distortion_temperature
+        loss = loss + regularization_term
+
         scale_factor = D if normalize_loss_by_dim else 1.0
         
         loss = loss / scale_factor
@@ -848,7 +874,12 @@ class JointModelCategoricalEnergy(BaseJointModel):
         
         summary = None
         if return_components:
-            summary = {key: value.mean() / scale_factor for key, value in component_all.items()}
+            summary = {}
+            for key, value in component_all.items():
+                if key in ["distortion_weight", "prior_weight", "distortion_temperature"]:
+                    summary[key] = value.mean()
+                else:
+                    summary[key] = value.mean() / scale_factor
 
         return JointLossOutput(
             loss=loss,
