@@ -859,7 +859,7 @@ class JointModelCategoricalEnergy(BaseJointModel):
         
         # Add temperature normalization term according to EBM framework
         # to prevent temperature scaling from driving T to infinity
-        c = D * 0.8
+        c = D
         regularization_term = c * self.log_distortion_temperature
         loss = loss + regularization_term
 

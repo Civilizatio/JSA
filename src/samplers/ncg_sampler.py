@@ -26,10 +26,31 @@ from src.base.base_sampler import BaseSampler
 
 
 class NCGSampler(BaseSampler):
+    """ Norm Constrained Gradient (NCG) sampler for discrete latents. 
+    
+    This sampler uses the distortion gradient to propose local changes to the latent tokens, 
+    and then applies a Metropolis-Hastings acceptance step based on the full joint energy. 
+    The proposal distribution is designed to favor tokens that reduce distortion while also considering a norm constraint to encourage exploration.
+    
+    Args:
+        joint_model: A model that exposes a `log_joint_prob(x, h)` method and a `distortion_model` with a `decoder` that has `embeddings`. This is used to compute the energies and gradients needed for the NCG proposals.
+        proposal_model: (Optional) A model used to compute the proposal distribution. Not used in this implementation but included for API consistency and potential future extensions.
+        alpha: A scaling factor for the norm constraint in the proposal distribution. Higher values encourage proposals that are closer to the current token embedding.
+        p_norm: The order of the norm used in the proposal distribution. Common choices are 1 (L1) or 2 (L2).
+        num_steps: The number of NCG steps to perform when `sample` is called.
+        num_sites: The number of token positions to update in each proposal. These are selected randomly at each step.
+        temperature: A temperature parameter for the proposal distribution. Higher values lead to more uniform proposals, while lower values make the proposal distribution more peaked around the tokens favored by the distortion gradient.
+        include_current_token: Whether to include the current token in the proposal distribution. If False, the sampler will only propose changes to different tokens, which can encourage exploration but may also lead to higher rejection rates.
+    
+    The proposal should be:
+    q(h' | h) \propto \exp\left( -\frac{1}{2} \nabla_{h} D(x, h) \cdot (e(h') - e(h)) - \frac{1}{2\alpha} \|e(h') - e(h)\|_p^p \right)
+    
+    """
+    
     def __init__(
         self,
         joint_model: nn.Module,
-        proposal_model: Optional[nn.Module] = None,
+        proposal_model: Optional[nn.Module] = None, # Not used in this implementation but included for API consistency/future extensions
         alpha: float = 1.0,
         p_norm: float = 2.0,
         num_steps: int = 1,
