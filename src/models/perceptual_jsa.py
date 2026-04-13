@@ -300,22 +300,25 @@ class PerceptualJSA(JSA):
         distortion_params = [
             p for p in self.joint_model.distortion_model.parameters() if p.requires_grad
         ]
-        
+
         # Include any learnable parameters defined directly on the joint_model (e.g., log_distortion_temperature)
         joint_direct_params = [
-            p for n, p in self.joint_model.named_parameters() 
-            if p.requires_grad and not n.startswith("distortion_model.") and not n.startswith("prior_model.")
+            p
+            for n, p in self.joint_model.named_parameters()
+            if p.requires_grad
+            and not n.startswith("distortion_model.")
+            and not n.startswith("prior_model.")
         ]
-        
+
         if len(distortion_params) > 0 or len(joint_direct_params) > 0:
             self._optimizer_slots["distortion"] = len(optimizers)
             optim_groups = get_optim_groups(
                 self.joint_model.distortion_model, self.weight_decay_distortion
             )
-            
+
             if len(joint_direct_params) > 0:
                 optim_groups[1]["params"].extend(joint_direct_params)
-                
+
             optimizers.append(
                 torch.optim.AdamW(optim_groups, lr=self.lr_joint, betas=(0.9, 0.95))
             )
@@ -402,17 +405,14 @@ class PerceptualJSA(JSA):
             strategy=self._choose_sampling_strategy(),
         )
 
-        should_apply_ncg = (
-            self.ncg_sampler is not None
-            and (
-                (
-                    stage == PerceptualTrainingStage.DECODER_PRETRAIN
-                    and self.use_ncg_in_stage1
-                )
-                or (
-                    stage == PerceptualTrainingStage.FULL_EBM
-                    and self.use_ncg_in_stage3_positive
-                )
+        should_apply_ncg = self.ncg_sampler is not None and (
+            (
+                stage == PerceptualTrainingStage.DECODER_PRETRAIN
+                and self.use_ncg_in_stage1
+            )
+            or (
+                stage == PerceptualTrainingStage.FULL_EBM
+                and self.use_ncg_in_stage3_positive
             )
         )
         if should_apply_ncg:

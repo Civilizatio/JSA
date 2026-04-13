@@ -7,6 +7,8 @@ model:
     num_mis_steps: 20
     parallel_mis_sampling: true
     num_validation_mis_steps: 15
+    use_ncg_in_stage1: true
+    train_proposal_in_stage1: true
     # init_from_ckpt: ./egs/cifar10/perceptual_jsa/cifar10_stage1_decoder/2026-03-29_12-47-24/checkpoints/step=025872-epoch=000131.ckpt
 
 trainer:
