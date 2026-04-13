@@ -27,7 +27,7 @@ model:
       _target_: src.samplers.ncg_sampler.NCGSampler
       alpha: 1.0
       p_norm: 2.0
-      num_steps: 3
+      num_sweeps: 3
       num_sites: 8
       temperature: 1.0
       include_current_token: true

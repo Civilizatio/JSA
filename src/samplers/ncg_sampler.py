@@ -57,8 +57,8 @@ class NCGSampler(BaseSampler):
         proposal_model: Optional[nn.Module] = None, # Not used in this implementation but included for API consistency/future extensions
         alpha: float = 1.0,
         p_norm: float = 2.0,
-        num_steps: int = 1,
-        num_sites: int = 1, # Number of token positions to update per step. If >1, multiple sites are updated sequentially with site-specific scores.
+        num_sweeps: int = 1,
+        num_sites: int = 1, # Block size: number of positions updated per MH step. Smaller blocks give higher acceptance rates.
         temperature: float = 1.0,
         include_current_token: bool = True,
         alpha_prior_input: Optional[float] = None,
@@ -69,7 +69,7 @@ class NCGSampler(BaseSampler):
         self.proposal_model = proposal_model
         self.alpha = float(alpha)
         self.p_norm = float(p_norm)
-        self.num_steps = int(num_steps)
+        self.num_sweeps = int(num_sweeps)
         self.num_sites = int(num_sites)
         self.temperature = float(temperature)
         self.include_current_token = bool(include_current_token)
@@ -364,12 +364,6 @@ class NCGSampler(BaseSampler):
 
         cur_in = prior_state.input_table[current_ids]
         cand_in = prior_state.input_table[candidate_ids]
-        score_in = self._proposal_scores(
-            grad_site=grad_in,
-            current_embed=cur_in,
-            candidate_embed=cand_in,
-            alpha=self.alpha_prior_input,
-        )
 
         if prior_state.weight_tying:
             # Input and output embedding tables are identical (shared weights).
@@ -387,6 +381,12 @@ class NCGSampler(BaseSampler):
         # Without weight tying the two embedding spaces are distinct.
         # Compute scores independently in each space and sum them,
         # following docs/ncg_in_jsa_perceptual.md 思路2.
+        score_in = self._proposal_scores(
+            grad_site=grad_in,
+            current_embed=cur_in,
+            candidate_embed=cand_in,
+            alpha=self.alpha_prior_input,
+        )
         cur_out = prior_state.output_table[current_ids]
         cand_out = prior_state.output_table[candidate_ids]
         score_out = self._proposal_scores(
@@ -440,7 +440,7 @@ class NCGSampler(BaseSampler):
         probs = self._scores_to_probs(score_total)
         return probs, cur_idx
 
-    def _propose(self, x: Tensor, h: Tensor):
+    def _propose(self, x: Tensor, h: Tensor, position_ids: Optional[Tensor] = None):
         distortion_model, decoder = self._get_decoder_and_embeddings()
         distortion_scale, prior_scale = self._resolve_energy_scales(x)
 
@@ -459,7 +459,8 @@ class NCGSampler(BaseSampler):
         if num_sites <= 0:
             return h_new.float(), proposal_log_prob, selected
 
-        position_ids = torch.randperm(num_positions, device=h.device)[:num_sites]
+        if position_ids is None:
+            position_ids = torch.randperm(num_positions, device=h.device)[:num_sites]
 
         flat_tokens = h_new.view(batch_size, num_positions, num_latent_vars)
 
@@ -495,32 +496,46 @@ class NCGSampler(BaseSampler):
         prior_state = self._build_prior_state(h_to, prior_scale)
 
         num_positions = h_to[..., 0].numel() // h_to.shape[0]
+        num_latent_vars = h_to.shape[-1]
         reverse_log_prob = torch.zeros(h_to.shape[0], device=h_to.device)
         batch_size = h_to.shape[0]
-        h_to_flat = h_to.long().view(batch_size, num_positions, h_to.shape[-1])
-        h_from_flat = h_from.long().view(batch_size, num_positions, h_from.shape[-1])
+
+        # Mirror the forward proposal exactly: start from h_to and progressively revert
+        # each site to h_from in the same order as the forward loop.
+        #
+        # This matters for multi-latent-var cases where _prior_site_scores reads
+        # flat_tokens[:, pos, :] (all latent vars at a position) to build candidate_ids.
+        # In the forward, when processing (lv=L, pos=P), lv < L are already at their
+        # new values.  The reverse must mirror this: when evaluating the reverse
+        # probability for (lv=L, pos=P), latent vars < L should already have been
+        # reverted (back to h_from), exactly matching the partially-updated state
+        # used in the forward.
+        reverse_flat = h_to.long().view(batch_size, num_positions, num_latent_vars).clone()
+        h_from_flat = h_from.long().view(batch_size, num_positions, num_latent_vars)
 
         for latent_var, pos in selected:
             embedding = decoder.embeddings[latent_var]
             embedding_weight = embedding.weight.detach()
-            grad_grid = grad_splits[latent_var].reshape(h_to.shape[0], num_positions, -1)
-            token_grid_from = h_from_flat[:, :, latent_var]
+            grad_grid = grad_splits[latent_var].reshape(batch_size, num_positions, -1)
 
-            old_idx = token_grid_from[:, pos].long()
-            
-            probs, cur_idx = self._compute_site_probs(
-                latent_var, pos, h_to_flat, embedding_weight, grad_grid, prior_state
+            old_idx = h_from_flat[:, pos, latent_var].long()
+
+            probs, _ = self._compute_site_probs(
+                latent_var, pos, reverse_flat, embedding_weight, grad_grid, prior_state
             )
 
             reverse_log_prob = reverse_log_prob + torch.log(
                 probs.gather(1, old_idx.unsqueeze(1)).squeeze(1).clamp_min(1e-12)
             )
 
+            # Revert this site so subsequent steps see the correct partially-restored state.
+            reverse_flat[:, pos, latent_var] = old_idx
+
         return reverse_log_prob
 
-    def step(self, x: Tensor, h: Tensor) -> Tensor:
+    def step(self, x: Tensor, h: Tensor, position_ids: Optional[Tensor] = None) -> Tensor:
         h_old = self._prepare_h(h)
-        h_new, log_q_forward, selected = self._propose(x, h_old)
+        h_new, log_q_forward, selected = self._propose(x, h_old, position_ids=position_ids)
         if len(selected) == 0:
             return h_old.float()
 
@@ -538,14 +553,35 @@ class NCGSampler(BaseSampler):
         h_next = torch.where(accept_view, h_new, h_old)
         return h_next.float()
 
-    def sample(self, x: Tensor, h_init: Tensor, num_steps: Optional[int] = None, return_all: bool = False):
-        steps = self.num_steps if num_steps is None else int(num_steps)
+    def sample(self, x: Tensor, h_init: Tensor, num_sweeps: Optional[int] = None, return_all: bool = False):
+        """Sample by performing full sweeps over all positions.
+
+        Each sweep visits every position exactly once in a random order, processing
+        them in blocks of ``num_sites``.  A separate MH accept/reject step is applied
+        to each block, keeping acceptance rates high while still covering the whole
+        sequence per sweep.
+
+        Args:
+            x: Observed data.
+            h_init: Initial latent token sequence.
+            num_sweeps: Number of full sweeps. Defaults to ``self.num_sweeps``.
+            return_all: If True, return the sequence after every sweep stacked as
+                ``[B, num_sweeps, ...]``; otherwise return only the final sample.
+        """
+        sweeps = self.num_sweeps if num_sweeps is None else int(num_sweeps)
         h = self._prepare_h(h_init)
+        num_positions = h[..., 0].numel() // h.shape[0]
+        block_size = max(1, min(self.num_sites, num_positions))
+
         traj = []
-        for _ in range(steps):
-            h = self.step(x, h)
+        for _ in range(sweeps):
+            perm = torch.randperm(num_positions, device=h.device)
+            for start in range(0, num_positions, block_size):
+                block_ids = perm[start : start + block_size]
+                h = self.step(x, h, position_ids=block_ids)
             if return_all:
                 traj.append(h)
+
         if return_all:
             return torch.stack(traj, dim=1)
         return h
