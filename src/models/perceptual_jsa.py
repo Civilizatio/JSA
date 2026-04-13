@@ -113,6 +113,9 @@ class PerceptualJSA(JSA):
         auto_stage_epochs: Optional[Sequence[int]] = None,
         stage3_negative_rounds: int = 1,
         parallel_mis_sampling: bool = True,
+        stage2_use_mis_sampling: bool = False,
+        use_ncg_in_stage1: bool = True,
+        use_ncg_in_stage3_positive: bool = True,
         train_proposal_in_stage1: bool = True,
         train_proposal_in_stage3: bool = True,
         num_validation_mis_steps: Optional[int] = None,
@@ -151,6 +154,9 @@ class PerceptualJSA(JSA):
         self.auto_stage_epochs = tuple(int(v) for v in auto_stage_epochs)
         self.stage3_negative_rounds = int(stage3_negative_rounds)
         self.parallel_mis_sampling = bool(parallel_mis_sampling)
+        self.stage2_use_mis_sampling = bool(stage2_use_mis_sampling)
+        self.use_ncg_in_stage1 = bool(use_ncg_in_stage1)
+        self.use_ncg_in_stage3_positive = bool(use_ncg_in_stage3_positive)
         self.train_proposal_in_stage1 = bool(train_proposal_in_stage1)
         self.train_proposal_in_stage3 = bool(train_proposal_in_stage3)
         self.num_validation_mis_steps = num_validation_mis_steps
@@ -379,13 +385,15 @@ class PerceptualJSA(JSA):
         if hasattr(self.joint_model, "set_stage"):
             self.joint_model.set_stage(stage)
 
-        # In Stage 2, the prior model prefers deterministic codes (argmax)
-        if stage == PerceptualTrainingStage.PRIOR_PRETRAIN:
+        if (
+            stage == PerceptualTrainingStage.PRIOR_PRETRAIN
+            and not self.stage2_use_mis_sampling
+        ):
             h = self.encode(x)
             # Add a sample dimension since the pipeline expects [B, num_samples, ...]
             return h.unsqueeze(1)
 
-        return self.sampler.sample(
+        h = self.sampler.sample(
             x,
             idx=idx,
             num_steps=self.num_mis_steps,
@@ -393,6 +401,26 @@ class PerceptualJSA(JSA):
             return_all=False,
             strategy=self._choose_sampling_strategy(),
         )
+
+        should_apply_ncg = (
+            self.ncg_sampler is not None
+            and (
+                (
+                    stage == PerceptualTrainingStage.DECODER_PRETRAIN
+                    and self.use_ncg_in_stage1
+                )
+                or (
+                    stage == PerceptualTrainingStage.FULL_EBM
+                    and self.use_ncg_in_stage3_positive
+                )
+            )
+        )
+        if should_apply_ncg:
+            h_last = self._strip_sample_dim(h)
+            h_refined = self.ncg_sampler.sample(x, h_last)
+            h = h_refined.unsqueeze(1)
+
+        return h
 
     def _default_negative_sample(self, x_real, h_pos):
         """Default negative sampling strategy for stage 3 when no joint_negative_sampler is provided.
@@ -585,14 +613,20 @@ class PerceptualJSA(JSA):
         x = self.get_input(batch, JsaDataset.IMAGE_KEY)
         idx = self.get_input(batch, JsaDataset.INDEX_KEY)
 
-        h = self.sampler.sample(
-            x,
-            idx=idx,
-            num_steps=self._validation_mis_steps(),
-            parallel=False,
-            return_all=False,
-            strategy="none",
-        )
+        if (
+            stage == PerceptualTrainingStage.PRIOR_PRETRAIN
+            and not self.stage2_use_mis_sampling
+        ):
+            h = self.encode(x).unsqueeze(1)
+        else:
+            h = self.sampler.sample(
+                x,
+                idx=idx,
+                num_steps=self._validation_mis_steps(),
+                parallel=False,
+                return_all=False,
+                strategy="none",
+            )
         h_last = self._strip_sample_dim(h)
         x_rec = self.decode(h_last)
 

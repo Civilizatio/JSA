@@ -91,6 +91,49 @@ class GPTPriorEnergy(nn.Module):
         self.vocab_size = math.prod(self.num_categories)
         self.sos_token = self.vocab_size if sos_token is None else int(sos_token)
 
+    @property
+    def uses_weight_tying(self) -> bool:
+        if hasattr(self.net, "weight_tying"):
+            return bool(self.net.weight_tying)
+        in_weight = self.get_input_embedding_weight()
+        out_weight = self.get_output_embedding_weight()
+        return in_weight.data_ptr() == out_weight.data_ptr()
+
+    def get_input_embedding_weight(self) -> Tensor:
+        if hasattr(self.net, "get_input_embedding_weight"):
+            return self.net.get_input_embedding_weight()
+        if hasattr(self.net, "tok_emb") and hasattr(self.net.tok_emb, "weight"):
+            return self.net.tok_emb.weight
+        raise AttributeError("Prior net does not expose an input embedding table.")
+
+    def get_output_embedding_weight(self) -> Tensor:
+        if hasattr(self.net, "get_output_embedding_weight"):
+            return self.net.get_output_embedding_weight()
+        if hasattr(self.net, "head") and hasattr(self.net.head, "weight"):
+            return self.net.head.weight
+        return self.get_input_embedding_weight()
+
+    def tokens_from_latent(self, h: Tensor) -> Tuple[Tensor, Tuple[int, ...]]:
+        return self._to_token_sequence(h)
+
+    def prepare_teacher_forcing(self, tokens: Tensor) -> Tuple[Tensor, Tensor]:
+        return self._prepare_teacher_forcing(tokens)
+
+    def forward_logits_from_input_embeddings(
+        self,
+        input_embeddings: Tensor,
+        return_hidden: bool = False,
+    ):
+        if not hasattr(self.net, "forward_with_token_embeddings"):
+            raise AttributeError(
+                "Prior net does not provide `forward_with_token_embeddings`, required for embedding-space NCG."
+            )
+        return self.net.forward_with_token_embeddings(
+            input_embeddings,
+            targets=None,
+            return_hidden=return_hidden,
+        )
+
     def _to_token_sequence(self, h: Tensor) -> Tuple[Tensor, Tuple[int, ...]]:
         """Converts a latent tensor h of shape [B, ..., num_latent_vars] into a token sequence of shape [B, T], where T is the number of spatial positions.
         Also returns the original spatial shape for later unflattening.

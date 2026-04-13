@@ -151,6 +151,7 @@ class GPT(nn.Module):
         resid_pdrop=0.0,
         attn_pdrop=0.0,
         n_unmasked=0,
+        weight_tying=True,
     ):
         super().__init__()
         config = GPTConfig(
@@ -174,7 +175,10 @@ class GPT(nn.Module):
         self.ln_f = nn.LayerNorm(config.n_embd)
         self.head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
         self.block_size = config.block_size
+        self.weight_tying = bool(weight_tying)
         self.apply(self._init_weights)
+        if self.weight_tying:
+            self.head.weight = self.tok_emb.weight
         self.config = config
         logger.info(
             "number of parameters: %e", sum(p.numel() for p in self.parameters())
@@ -192,29 +196,56 @@ class GPT(nn.Module):
             module.bias.data.zero_()
             module.weight.data.fill_(1.0)
 
-    def forward(self, idx, embeddings=None, targets=None):
-        # forward the GPT model
-        token_embeddings = self.tok_emb(idx)  # each index maps to a (learnable) vector
+    def get_input_embedding_weight(self):
+        return self.tok_emb.weight
 
-        if embeddings is not None:  # prepend explicit embeddings
-            token_embeddings = torch.cat((embeddings, token_embeddings), dim=1)
+    def get_output_embedding_weight(self):
+        return self.head.weight
 
+    def _forward_from_token_embeddings(self, token_embeddings, targets=None, return_hidden=False):
         t = token_embeddings.shape[1]
         assert t <= self.block_size, "Cannot forward, model block size is exhausted."
-        position_embeddings = self.pos_emb[
-            :, :t, :
-        ]  # each position maps to a (learnable) vector
+        position_embeddings = self.pos_emb[:, :t, :]
         x = self.drop(token_embeddings + position_embeddings)
         x = self.blocks(x)
         x = self.ln_f(x)
         logits = self.head(x)
 
-        # if we are given some desired targets also calculate the loss
         loss = None
         if targets is not None:
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
 
+        if return_hidden:
+            return logits, loss, x
         return logits, loss
+
+    def forward_with_token_embeddings(self, token_embeddings, targets=None, return_hidden=False):
+        return self._forward_from_token_embeddings(
+            token_embeddings=token_embeddings,
+            targets=targets,
+            return_hidden=return_hidden,
+        )
+
+    def forward(
+        self,
+        idx,
+        embeddings=None,
+        targets=None,
+        token_embeddings=None,
+        return_hidden=False,
+    ):
+        # forward the GPT model
+        if token_embeddings is None:
+            token_embeddings = self.tok_emb(idx)  # each index maps to a (learnable) vector
+
+        if embeddings is not None:  # prepend explicit embeddings
+            token_embeddings = torch.cat((embeddings, token_embeddings), dim=1)
+
+        return self._forward_from_token_embeddings(
+            token_embeddings=token_embeddings,
+            targets=targets,
+            return_hidden=return_hidden,
+        )
 
     def forward_with_past(
         self, idx, embeddings=None, targets=None, past=None, past_length=None

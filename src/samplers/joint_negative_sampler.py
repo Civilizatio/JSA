@@ -6,21 +6,12 @@ from typing import Optional, Sequence
 
 import torch
 from torch import Tensor
-import torch.nn as nn
 
 from src.base.base_sampler import BaseSampler
 
 
 class JointReplayBuffer:
-    """A simple replay buffer for storing (x, h) pairs from previous negative sampling rounds.
-
-    Arguments
-    ---------
-    capacity: int
-        Maximum number of (x, h) pairs to store in the buffer. If <= 0, the buffer is disabled and no samples will be stored.
-    store_on_cpu: bool
-        If True, stored samples will be kept on CPU to save GPU memory. Samples will be moved to the appropriate device when sampled. If False, samples will be stored on the same device as they were pushed.
-    """
+    """Replay buffer for persistent negative samples ``(x, h)``."""
 
     def __init__(self, capacity: int = 0, store_on_cpu: bool = True):
         self.capacity = int(capacity)
@@ -35,35 +26,42 @@ class JointReplayBuffer:
             return x.detach().cpu()
         return x.detach().clone()
 
+    def _allocate(self, x_store: Tensor, h_store: Tensor):
+        self.x_buffer = torch.empty(
+            (self.capacity, *x_store.shape[1:]),
+            dtype=x_store.dtype,
+            device=x_store.device,
+        )
+        self.h_buffer = torch.empty(
+            (self.capacity, *h_store.shape[1:]),
+            dtype=h_store.dtype,
+            device=h_store.device,
+        )
+
     def push(self, x: Tensor, h: Tensor) -> None:
         if self.capacity <= 0:
             return
+
         x_store = self._maybe_to_store_device(x)
         h_store = self._maybe_to_store_device(h)
 
         if self.x_buffer is None:
-            self.x_buffer = torch.empty(
-                (self.capacity, *x_store.shape[1:]),
-                dtype=x_store.dtype,
-                device=x_store.device,
-            )
-            self.h_buffer = torch.empty(
-                (self.capacity, *h_store.shape[1:]),
-                dtype=h_store.dtype,
-                device=h_store.device,
-            )
+            self._allocate(x_store, h_store)
 
         batch_size = x_store.shape[0]
-        for i in range(batch_size):
-            self.x_buffer[self.ptr] = x_store[i]
-            self.h_buffer[self.ptr] = h_store[i]
-            self.ptr = (self.ptr + 1) % self.capacity
-            self.size = min(self.size + 1, self.capacity)
+        write_idx = (
+            torch.arange(batch_size, device=x_store.device, dtype=torch.long) + self.ptr
+        ) % self.capacity
+        self.x_buffer[write_idx] = x_store
+        self.h_buffer[write_idx] = h_store
+        self.ptr = int((self.ptr + batch_size) % self.capacity)
+        self.size = min(self.size + batch_size, self.capacity)
 
     def sample(self, batch_size: int, device) -> Optional[tuple[Tensor, Tensor]]:
         if self.size == 0:
             return None
-        idx = torch.randint(0, self.size, (batch_size,))
+
+        idx = torch.randint(0, self.size, (batch_size,), device=self.x_buffer.device)
         x = self.x_buffer[idx].to(device)
         h = self.h_buffer[idx].to(device)
         return x, h
@@ -114,6 +112,12 @@ class JointNegativeSampler(BaseSampler):
         replay_prob: float = 0.95,
         init_noise_std: float = 0.01,
         clamp_range: Optional[Sequence[float]] = (-1.0, 1.0),
+        h_num_steps: int = 10,
+        h_parallel: bool = False,
+        h_strategy: str = "none",
+        use_ncg_after_h: bool = True,
+        x_num_steps: Optional[int] = None,
+        replay_store_on_cpu: bool = True,
     ):
         self.joint_model = joint_model
         self.proposal_model = proposal_model
@@ -124,7 +128,15 @@ class JointNegativeSampler(BaseSampler):
         self.replay_prob = float(replay_prob)
         self.init_noise_std = float(init_noise_std)
         self.clamp_range = tuple(clamp_range) if clamp_range is not None else None
-        self.replay_buffer = JointReplayBuffer(capacity=replay_buffer_size)
+        self.h_num_steps = int(h_num_steps)
+        self.h_parallel = bool(h_parallel)
+        self.h_strategy = str(h_strategy)
+        self.use_ncg_after_h = bool(use_ncg_after_h)
+        self.x_num_steps = None if x_num_steps is None else int(x_num_steps)
+        self.replay_buffer = JointReplayBuffer(
+            capacity=replay_buffer_size,
+            store_on_cpu=bool(replay_store_on_cpu),
+        )
 
     def to(self, device):
         if hasattr(self.h_sampler, "to"):
@@ -140,43 +152,66 @@ class JointNegativeSampler(BaseSampler):
             return x
         return x.clamp(self.clamp_range[0], self.clamp_range[1])
 
+    @staticmethod
+    def _sanitize_h(h: Tensor) -> Tensor:
+        if h.dim() == 5 and h.shape[1] == 1:
+            h = h[:, 0]
+        return h.detach().clone().float()
+
     def _initialize_state(self, x_real: Tensor, h_pos: Optional[Tensor] = None):
         batch_size = x_real.shape[0]
-        replay = self.replay_buffer.sample(batch_size, x_real.device)
-        use_replay = (
-            replay is not None
-            and torch.rand(1, device=x_real.device).item() < self.replay_prob
-        )
 
-        if use_replay:
-            x_init, h_init = replay
+        x_fresh = x_real + self.init_noise_std * torch.randn_like(x_real)
+        x_fresh = self._clamp(x_fresh)
+
+        if h_pos is not None:
+            h_fresh = self._sanitize_h(h_pos)
         else:
-            x_init = x_real + self.init_noise_std * torch.randn_like(x_real)
-            x_init = self._clamp(x_init)
-            if h_pos is not None:
-                if h_pos.dim() == 5 and h_pos.shape[1] == 1:
-                    h_init = h_pos[:, 0].detach().clone()
-                else:
-                    h_init = h_pos.detach().clone()
-            else:
-                h_init = self.proposal_model.sample_latent(x_real).squeeze(1)
+            h_fresh = self.proposal_model.sample_latent(x_real).squeeze(1)
+            h_fresh = self._sanitize_h(h_fresh)
 
+        replay = self.replay_buffer.sample(batch_size, x_real.device)
+        if replay is None or self.replay_prob <= 0.0:
+            return x_fresh.detach(), h_fresh.detach()
+
+        x_replay, h_replay = replay
+        use_replay_mask = torch.rand(batch_size, device=x_real.device) < self.replay_prob
+        if not use_replay_mask.any():
+            return x_fresh.detach(), h_fresh.detach()
+
+        x_init = x_fresh.clone()
+        h_init = h_fresh.clone()
+        x_init[use_replay_mask] = x_replay[use_replay_mask]
+        h_init[use_replay_mask] = h_replay[use_replay_mask]
         return x_init.detach(), h_init.detach()
 
-    def step(self, x: Tensor, h: Tensor) -> Tensor:
-        x_new = self.x_sampler.sample(x, h)
+    def _sample_x(self, x: Tensor, h: Tensor) -> Tensor:
+        if self.x_sampler is None:
+            raise RuntimeError("JointNegativeSampler requires an x_sampler in stage-3.")
+        kwargs = {}
+        if self.x_num_steps is not None:
+            kwargs["num_steps"] = self.x_num_steps
+        x_new = self.x_sampler.sample(x, h, **kwargs)
+        return self._clamp(x_new).detach()
+
+    def _sample_h(self, x: Tensor) -> Tensor:
         h_new = self.h_sampler.sample(
-            x_new,
+            x,
             idx=None,
-            num_steps=10,
-            parallel=False,
+            num_steps=self.h_num_steps,
+            parallel=self.h_parallel,
             return_all=False,
-            strategy="none",
+            strategy=self.h_strategy,
         )
-        if h_new.dim() == 5 and h_new.shape[1] == 1:
-            h_new = h_new[:, 0]
-        if self.ncg_sampler is not None:
-            h_new = self.ncg_sampler.sample(x_new, h_new)
+        h_new = self._sanitize_h(h_new)
+        if self.use_ncg_after_h and self.ncg_sampler is not None:
+            h_new = self.ncg_sampler.sample(x, h_new)
+            h_new = self._sanitize_h(h_new)
+        return h_new.detach()
+
+    def step(self, x: Tensor, h: Tensor):
+        x_new = self._sample_x(x, h)
+        h_new = self._sample_h(x_new)
         return x_new.detach(), h_new.detach()
 
     def sample(self, x_real: Tensor, h_pos: Optional[Tensor] = None):

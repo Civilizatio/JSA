@@ -1,76 +1,38 @@
-# JSA + Perceptual Loss
+# JSA + Perceptual Loss + NCG
 
-基本的 JSA 原理，可以在 [theory.md](./theory_of_jsa.md) 中查看。我们目前的代码框架和接口设计，可以在 [structure.md](./structure.md) 中查看，基本上是按照 JSA 的原理框架来设计的。此外，还额外从 VQ-VAE 中假如了 VQ-VAE 的实现以及 Latent-transformer 的实现。
+本次代码修改的目标是：
 
-后续我们的任务是在现有的 JSA 高斯似然的基础上，引入 Perceptual Loss 来提升生成质量。引入的 perceptual loss 的原理，可以在 [jsa_perceptual_loss.md](./jsa_perceptual_loss.md) 中查看。主要就是能量的建模，以及为了训练，引入了三个阶段的训练步骤。
+1. 完善 [NCGSampler](../src/samplers/ncg_sampler.py) 的实现，目前的实现有点问题，修改使之适配新的代码结构。
+2. 修改 [PerceptualJSA](../src/losses/perceptual_jsa.py) 的实现，修改训练流程，使之在第一三阶段引入 NCG 采样器。
 
-下面主要介绍可能的代码实现的细节。
+原理部分主要参考自：
 
-## Code Implementation Details
+- [jsa_perceptual.md](./jsa_perceptual_loss.md)
+- [ncg_in_jsa_perceptual.md](./ncg_in_jsa_perceptual.md)
 
-### 三个阶段如何实现
+## 1. NCGSampler 的修改
 
-继承当前的 `JSA` 类，定义一个新的 `PerceptualJSA` 类。其功能主要是接受新的参数，来控制调整训练的三个阶段。
+当前的 NCG 的实现，存在以下问题：
 
-需要注意的是，我需要的是三个阶段分开训练。也就是说，先训练第一阶段。然后经过我观察，确定可以后，再重新跑实验训练第二阶段。然后再训练第三阶段。也就是说，三个阶段的训练是分开进行的，而不是在一个训练过程中自动切换三个阶段。这样的好处就是，我可以跑很多个第一阶段得到的模型，然后再选择一个最好的模型来继续训练第二阶段。然后再选择一个最好的模型来训练第三阶段。
+- 只是根据 [joint model](../src/models/joint_model.py) 的 distortion 部分来进行采样，这在第一阶段是可以的，但是在第三阶段，我们需要的是对联合的能量进行采样，而不是单纯的 distortion。我的修改想法是，在 NCGSampler 中引入一个参数，来区分当前是第一阶段还是第三阶段，根据不同的阶段来选择不同的能量进行采样。或者不需要区分阶段，因为我的 joint model 会自动计算能量，不包含 prior 部分的能量的时候，采样的能量就是 distortion 的能量。（这个你看一下哪一个更加合理）。这里参考 [ncg_in_jsa_perceptual.md](../docs/ncg_in_jsa_perceptual.md) 中的描述，采用思路 2 实现。
+- 对于 prior 的关于 embedding 的部分，当前的代码是没有的，我的想法是，在原有的 [GPT](../src/modules/gpts/mingpt.py) 模型中，增加一个参数，用于控制是否使用 weight tying，如果使用 weight tying，则 input embedding 和 output embedding 是同一个，如果不使用，则需要分别定义两个 embedding。然后在计算 prior 的能量的时候，根据是否使用 weight tying 来计算对应的梯度。而这里求梯度的逻辑最好不要放在 gpt 的实现中，而是放在 NCGSampler 中，因为这个是 NCG 特有的逻辑，不应该污染到 GPT 模型的实现中。而且 NCGSampler 能够接触到的是 [PriorModel](../src/modules/jsa/prior_model.py) 的接口，又封装了一层。这个你看一下怎么实现比较合理。
 
-当然，一个设计就是，引入一个 `force_stage` 的参数。来控制当前训练的阶段。同时还有默认的自动切换阶段的设计。也就是说，如果 `force_stage` 不为 None，则强制使用这个阶段来训练。否则的话，就根据当前的 epoch 来自动切换阶段。
+## 2. PerceptualJSA 的修改
 
-我希望我的配置文件 `yaml` 也是三个阶段分开的。我现在已经在 [configs/perceptual_jsa/](../configs/perceptual_jsa/) 下列出了文件的示例，一个 `jsa_base.yaml` 是公共的配置文件，包含了三个阶段的公共配置。然后每个阶段有一个单独的配置文件，来覆盖不同阶段的不同配置。
+我希望修改的主要有下面几点：
 
-### JointModel 的设计
+- 目前在第二阶段的训练中，我一开始是使用了 MIS 采样的 h，后面又采用了直接使用 encoder 直接编码，不经过采样的 h。我后面有可能对这两种方法进行对比实验。因此希望你能给我加一个参数，这两种方法可以切换的。
 
-我们一开始的 `JointModel` 的设计，是基于高斯似然的设计。也就是说，我们的重建损失是基于高斯似然来计算的，先验使用均匀先验，比较容易获得。但是现在我们引入了 Perceptual Loss，我们无法直接计算似然了。也就是说，我们无法直接计算 $p_\theta(x|h)$ 的似然了。因此，我们需要修改 `JointModel` 的设计，来适应新的损失计算。
+## 3. LD 采样的修改
 
-其基本的逻辑不变，就是需要返回的是一个能量值。这个能量值包含了 distortion 和 prior 两部分。distortion 是基于 pixel loss 和 perceptual loss 来计算的，prior 是基于先验来计算的。然后在 `get_loss` 的时候，根据当前的训练阶段，来计算不同的损失。
+主要针对的是 [Langevin Dynamics](../src/samplers/langevin_sampler.py) 采样器，目前没有接受拒绝的步骤，希望你能加上这个步骤，使其成为一个完整的 MALA 采样器。
 
-则根据上面的设置，可以将修改前后的统一起来，我们的 `JointModel` 不再是
-```python
-class JointModelCategoricalGaussian(BaseJointModel):
-    """
-    p_theta(x, h), must implement:
-        - log_joint_prob(x, h)
-    We assume Categorical prior for p(h) and Gaussian likelihood for p(x|h).
-    """
+## 4. JointNegativeSampler 的修改
 
-    def __init__(
-        self,
-        net: nn.Module,
-        sigma=0.1,
-        sigma_mode: str = "learnable",  # whether sigma is learnable or fixed or scheduled
-        sample_chunk_size=8,
-    ):
-        pass
-```
-而是修改为
-```python
-class JointModelCategoricalEnergy(BaseJointModel):
-    """
-    p_theta(x, h), must implement:
-        - log_joint_prob(x, h)
-    We assume Categorical prior for p(h) and Energy-based likelihood for p(x|h).
-    """
+主要针对的是 [JointNegativeSampler](../src/samplers/joint_negative_sampler.py) 采样器，目前的实现有点简陋，希望你重构一下。逻辑方面应该没有太大问题。
 
-    def __init__(
-        self,
-        distortion_model: nn.Module,  # the model to calculate distortion, e.g. pixel loss or perceptual loss or both
-        prior_model: nn.Module,  # the model to calculate prior, e.g. uniform prior or learned prior
-        distortion_weight=1.0,
-        prior_weight=1.0,
-        sample_chunk_size=8,
+## 5. 注意事项
 
-    ):
-        pass
-```
-
-这样我们可以在原来的似然的基础上扩展，计算 distortion 的部分，在原来的先验的基础上扩展，计算 prior 的部分。我们可以引入 [gpt](../src/modules/gpts/mingpt.py) 来建模先验，来计算 prior 的能量值。
-
-原来的 `sigma` 是一个可学习或者可调整值，这里可能没有了，或者者说它被 absorbed 进了 distortion_weight 里面了。因为我们不再直接计算似然了，而是计算一个能量值，这个能量值包含了 distortion 和 prior 两部分。但是会引入一个新的可调参数，为 $\lambda$，来控制 prior 的权重，因为我们的第二阶段是逐步增加 prior 的权重到 1 来训练的。
-
-### MISampler 的调整
-
-有可能随着 `JointModel` 的修改，我们的 `MISampler` 用到的接口也需要调整。
-
-### Langevin Dynamics 的实现
-
-由于第三阶段需要引入对 $x$ 的 LD 采样。这里需要在 [samplers/](../src/samplers/) 下实现一个新的 `LangevinSampler`，来实现 LD 采样的功能。这个 `LangevinSampler` 需要接受一个 `JointModel`，来计算能量值的梯度，然后根据 LD 的更新公式来更新 $x$ 的值。
+- 在修改代码的过程中，尽量保持代码的清晰和可读性，注释要充分，尤其是对于一些复杂的逻辑部分。
+- 修改完成后，如果可以的话，进行简单地测试，确保修改的代码能够正常运行，并且没有引入新的 bug。
+- ！！！ 修改完成后，给我一个 change.md 的文件，详细地说明你修改了哪些文件，修改了哪些函数，修改的逻辑是什么，以及为什么要这样修改。这个 change.md 的文件对于我理解你的修改非常重要，所以请务必写得详细一些。

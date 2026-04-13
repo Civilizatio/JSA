@@ -92,6 +92,7 @@ model:
                 embd_pdrop: 0.2
                 resid_pdrop: 0.2
                 attn_pdrop: 0.15
+                weight_tying: false
     proposal_model:
       class_path: src.modules.jsa.proposal_model.ProposalModelCategorical
       init_args:
@@ -134,6 +135,7 @@ model:
       num_sites: 2
       temperature: 1.0
       include_current_token: true
+      include_prior_in_proposal: true
     joint_negative_sampler:
       _target_: src.samplers.joint_negative_sampler.JointNegativeSampler
       num_rounds: 1
@@ -161,6 +163,9 @@ model:
     auto_stage_epochs: [0, 0]
     stage3_negative_rounds: 1
     parallel_mis_sampling: true
+    stage2_use_mis_sampling: false
+    use_ncg_in_stage1: true
+    use_ncg_in_stage3_positive: true
     train_proposal_in_stage1: true
     train_proposal_in_stage3: true
     num_validation_mis_steps: 10

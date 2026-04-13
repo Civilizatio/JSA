@@ -23,14 +23,15 @@ model:
       num_steps: 15
       clamp_range: [-1.0, 1.0]
       detach_between_steps: true
-    ncg_sampler: null
-      # _target_: src.samplers.ncg_sampler.NCGSampler
-      # alpha: 1.0
-      # p_norm: 2.0
-      # num_steps: 5
-      # num_sites: 10
-      # temperature: 1.0
-      # include_current_token: true
+    ncg_sampler:
+      _target_: src.samplers.ncg_sampler.NCGSampler
+      alpha: 1.0
+      p_norm: 2.0
+      num_steps: 3
+      num_sites: 8
+      temperature: 1.0
+      include_current_token: true
+      include_prior_in_proposal: true
 
 trainer:
   logger:

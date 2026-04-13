@@ -1,20 +1,20 @@
 # src/samplers/ncg_sampler.py
-"""A practical Norm-Constrained Gradient (NCG) sampler for discrete latents.
+"""Norm-Constrained Gradient (NCG) sampler for discrete latent codes.
 
-This implementation follows the spirit of gradient-guided local proposals on token embeddings:
+The sampler follows the score-composition strategy described in docs/ncg_in_jsa_perceptual.md:
 
-1. compute the distortion gradient with respect to the current latent embeddings;
-2. build a proposal distribution over nearby token embeddings at a few selected sites;
-3. accept or reject the proposal with a Metropolis-Hastings correction using the *full* joint energy.
+1. build distortion-space proposal scores from ``d(x, h)`` gradients;
+2. optionally build prior-space proposal scores from ``f(h)`` gradients;
+3. sum scores in probability space and apply MH correction on the full joint model.
 
-The proposal uses only the distortion gradient by default. This keeps the implementation broadly
-compatible with the current decoder-centric setup while still allowing the acceptance ratio to account
-for the prior energy.
+The stage behaviour is controlled by ``joint_model`` itself. When stage weights disable the prior
+term (e.g. stage-1), prior scores are automatically skipped.
 """
 
 from __future__ import annotations
 
-from typing import List, Optional
+from dataclasses import dataclass
+from typing import List, Optional, Sequence, Tuple
 
 import torch
 import torch.nn.functional as F
@@ -22,30 +22,34 @@ from torch import Tensor
 import torch.nn as nn
 
 from src.base.base_sampler import BaseSampler
+from src.utils.codebook_utils import compute_category_weights
 
+
+@dataclass
+class _PriorProposalState:
+    """ Intermediate state for computing prior-based proposal scores in NCGSampler.
+    
+    Args:
+        grad_input: Gradient of the prior energy w.r.t. input embeddings, shape [B, T, D_in].
+        grad_output: Gradient of the prior energy w.r.t. output embeddings, shape [B, T, D_out].
+        input_table: Input embedding table from the prior model, shape [V_in, D_in].
+        output_table: Output embedding table from the prior model, shape [V_out, D_out].
+        num_categories: Number of categories for each latent variable (for multi-variable cases).
+        category_weights: Precomputed weights for encoding multi-dimensional categorical variables.
+        weight_tying: Whether the prior model uses weight tying between input and output embeddings.
+    """
+    
+    grad_input: Tensor
+    grad_output: Tensor
+    input_table: Tensor
+    output_table: Tensor
+    num_categories: Sequence[int]
+    category_weights: Tensor
+    weight_tying: bool
 
 
 class NCGSampler(BaseSampler):
-    """ Norm Constrained Gradient (NCG) sampler for discrete latents. 
-    
-    This sampler uses the distortion gradient to propose local changes to the latent tokens, 
-    and then applies a Metropolis-Hastings acceptance step based on the full joint energy. 
-    The proposal distribution is designed to favor tokens that reduce distortion while also considering a norm constraint to encourage exploration.
-    
-    Args:
-        joint_model: A model that exposes a `log_joint_prob(x, h)` method and a `distortion_model` with a `decoder` that has `embeddings`. This is used to compute the energies and gradients needed for the NCG proposals.
-        proposal_model: (Optional) A model used to compute the proposal distribution. Not used in this implementation but included for API consistency and potential future extensions.
-        alpha: A scaling factor for the norm constraint in the proposal distribution. Higher values encourage proposals that are closer to the current token embedding.
-        p_norm: The order of the norm used in the proposal distribution. Common choices are 1 (L1) or 2 (L2).
-        num_steps: The number of NCG steps to perform when `sample` is called.
-        num_sites: The number of token positions to update in each proposal. These are selected randomly at each step.
-        temperature: A temperature parameter for the proposal distribution. Higher values lead to more uniform proposals, while lower values make the proposal distribution more peaked around the tokens favored by the distortion gradient.
-        include_current_token: Whether to include the current token in the proposal distribution. If False, the sampler will only propose changes to different tokens, which can encourage exploration but may also lead to higher rejection rates.
-    
-    The proposal should be:
-    q(h' | h) \propto \exp\left( -\frac{1}{2} \nabla_{h} D(x, h) \cdot (e(h') - e(h)) - \frac{1}{2\alpha} \|e(h') - e(h)\|_p^p \right)
-    
-    """
+    """Norm constrained local proposal for latent token MCMC."""
     
     def __init__(
         self,
@@ -54,9 +58,12 @@ class NCGSampler(BaseSampler):
         alpha: float = 1.0,
         p_norm: float = 2.0,
         num_steps: int = 1,
-        num_sites: int = 1,
+        num_sites: int = 1, # Number of token positions to update per step. If >1, multiple sites are updated sequentially with site-specific scores.
         temperature: float = 1.0,
         include_current_token: bool = True,
+        alpha_prior_input: Optional[float] = None,
+        alpha_prior_output: Optional[float] = None,
+        include_prior_in_proposal: bool = True,
     ):
         self.joint_model = joint_model
         self.proposal_model = proposal_model
@@ -66,13 +73,19 @@ class NCGSampler(BaseSampler):
         self.num_sites = int(num_sites)
         self.temperature = float(temperature)
         self.include_current_token = bool(include_current_token)
+        self.alpha_prior_input = (
+            float(alpha) if alpha_prior_input is None else float(alpha_prior_input)
+        )
+        self.alpha_prior_output = (
+            float(alpha) if alpha_prior_output is None else float(alpha_prior_output)
+        )
+        self.include_prior_in_proposal = bool(include_prior_in_proposal)
 
     def to(self, device: torch.device):
         return self
 
     def _prepare_h(self, h: Tensor) -> Tensor:
-        """Prepares the latent tensor `h` for NCG proposals. If `h` has a single-channel spatial structure, it is treated as token indices and returned as-is. 
-        Otherwise, it is treated as embedded latents and returned as-is for gradient computation."""
+        """Normalize latent shape to ``[B, ..., num_latent_vars]``."""
         if h.dim() == 5 and h.shape[1] == 1: # [B, 1, H, W, num_latent_vars]
             return h[:, 0].clone() # [B, H, W, num_latent_vars] treated as token indices
         if h.dim() < 3:
@@ -81,7 +94,7 @@ class NCGSampler(BaseSampler):
             )
         return h.clone()
 
-    def _get_decoder_and_embeddings(self):
+    def _get_decoder_and_embeddings(self)-> Tuple[nn.Module, nn.Module]:
         distortion_model = getattr(self.joint_model, "distortion_model", None)
         if distortion_model is None:
             raise AttributeError("joint_model must expose `distortion_model` for NCGSampler.")
@@ -92,38 +105,76 @@ class NCGSampler(BaseSampler):
             )
         return distortion_model, decoder
 
-    def _embedding_gradients(self, x: Tensor, h: Tensor) -> Tensor:
-        """ Computes the gradient of the distortion with respect to the latent embeddings. 
-        This is used to guide the NCG proposals."""
+    def _resolve_energy_scales(self, x: Tensor)-> Tuple[Tensor, Tensor]:
+        """Resolve distortion and prior energy scales, accounting for any temperature or stage weighting.
+        
+        Returns:
+            distortion_scale: Scalar tensor to scale the distortion energy component in the proposal distribution.
+                distortion_scale = distortion_weight / temperature, where distortion_weight is from joint_model._component_weights() if available, else 1.0.
+            prior_scale: Scalar tensor to scale the prior energy component in the proposal distribution.
+                prior_scale = prior_weight, where prior_weight is from joint_model._component_weights() if available, else 1.0.
+        """
+        distortion_weight = 1.0
+        prior_weight = 1.0
+        if hasattr(self.joint_model, "_component_weights"):
+            try:
+                distortion_weight, prior_weight = self.joint_model._component_weights()
+            except Exception:
+                pass
+
+        temperature = getattr(self.joint_model, "distortion_temperature", None)
+        if temperature is None:
+            temperature_tensor = torch.tensor(1.0, device=x.device, dtype=x.dtype)
+        elif torch.is_tensor(temperature):
+            temperature_tensor = temperature.to(device=x.device, dtype=x.dtype)
+        else:
+            temperature_tensor = torch.tensor(
+                float(temperature), device=x.device, dtype=x.dtype
+            )
+
+        distortion_scale = (
+            torch.tensor(float(distortion_weight), device=x.device, dtype=x.dtype)
+            / temperature_tensor.clamp_min(1e-8)
+        )
+        prior_scale = torch.tensor(float(prior_weight), device=x.device, dtype=x.dtype)
+        return distortion_scale, prior_scale
+
+    def _distortion_embedding_gradients(self, x: Tensor, h: Tensor, distortion_scale: Tensor) -> Tensor:
+        """Gradient of stage-aware distortion energy w.r.t. decoder embeddings.
+        
+        nabla_emb = dE/d_emb = dE/ddistortion * ddistortion/dx_hat * dx_hat/d_emb
+        """
         distortion_model, _ = self._get_decoder_and_embeddings()
         embedded_h = distortion_model.embed_latent(h).detach().requires_grad_(True)
         x_hat = distortion_model.decode_from_embedded_latent(embedded_h)
         out = distortion_model.distortion_from_reconstruction(x, x_hat)
-        grad = torch.autograd.grad(out.distortion.sum(), embedded_h, only_inputs=True)[0]
+        energy = (distortion_scale * out.distortion).sum()
+        grad = torch.autograd.grad(energy, embedded_h, only_inputs=True)[0]
         return grad
 
-    def _site_scores(
+    def _proposal_scores(
         self,
-        embedding_table: Tensor,
         grad_site: Tensor,
-        current_idx: Tensor,
         current_embed: Tensor,
+        candidate_embed: Tensor,
+        alpha: float,
     ) -> Tensor:
-        """Computes unnormalized log-probability scores for all tokens in the embedding table at a single site, 
-        given the distortion gradient at that site and the current token embedding."""
+        """Unnormalized proposal score for candidate embeddings.
         
-        # embedding_table: [K, D]
-        # grad_site/current_embed/current_idx batch-aligned.
-        diff = embedding_table.unsqueeze(0) - current_embed.unsqueeze(1)
+        score = -0.5 * <grad_site, candidate_embed - current_embed> - 0.5 * alpha * ||candidate_embed - current_embed||_p^p
+        """
+        diff = candidate_embed - current_embed.unsqueeze(1)
         linear_term = -0.5 * torch.sum(grad_site.unsqueeze(1) * diff, dim=-1)
-        norm_term = -0.5 / self.alpha * torch.sum(diff.abs().pow(self.p_norm), dim=-1)
+        norm_term = -0.5 / max(alpha, 1e-8) * torch.sum(diff.abs().pow(self.p_norm), dim=-1)
         scores = linear_term + norm_term
-        if self.include_current_token:
-            scores.scatter_(1, current_idx.unsqueeze(1), scores.gather(1, current_idx.unsqueeze(1)))
-        scores = scores / max(self.temperature, 1e-6)
         return scores
 
     def _flatten_index(self, h: Tensor, latent_var: int):
+        """Flatten the specified latent variable across spatial dimensions to get current token indices for masking.
+        
+        h is expected to have shape [B, ..., num_latent_vars], where ... are spatial dimensions. 
+        This method extracts the indices for the specified latent variable and flattens the spatial dimensions, 
+        resulting in shape [B, num_tokens]."""
         current_tokens = h[..., latent_var].long()
         return current_tokens.reshape(h.shape[0], -1)
 
@@ -135,30 +186,293 @@ class NCGSampler(BaseSampler):
             )
         return list(torch.split(grad, dims, dim=-1))
 
+    def _mask_current_token(self, scores: Tensor, current_idx: Tensor) -> Tensor:
+        if self.include_current_token or scores.shape[1] <= 1:
+            # If including current token in proposal or only one token in vocab, no masking needed.
+            return scores
+        masked = scores.clone()
+        masked.scatter_(1, current_idx.unsqueeze(1), float("-inf"))
+        all_invalid = torch.isinf(masked).all(dim=1)
+        if all_invalid.any():
+            masked[all_invalid] = scores[all_invalid]
+        return masked
+
+    def _scores_to_probs(self, scores: Tensor) -> Tensor:
+        scaled = scores / max(self.temperature, 1e-6)
+        probs = F.softmax(scaled, dim=-1)
+        probs = torch.nan_to_num(probs, nan=0.0, posinf=0.0, neginf=0.0)
+        probs = probs / probs.sum(dim=-1, keepdim=True).clamp_min(1e-12)
+        return probs
+
+    def _get_prior_model(self):
+        """ Helper to get the prior model from the joint model, with checks for required methods."""
+        prior_model = getattr(self.joint_model, "prior_model", None)
+        if prior_model is None:
+            return None
+        required = [
+            "tokens_from_latent",
+            "prepare_teacher_forcing",
+            "get_input_embedding_weight",
+            "get_output_embedding_weight",
+            "forward_logits_from_input_embeddings",
+        ]
+        if not all(hasattr(prior_model, key) for key in required):
+            return None
+        return prior_model
+
+    @staticmethod
+    def _encode_multidim_tokens(tokens: Tensor, weights: Tensor) -> Tensor:
+        """Encode multi-dimensional tokens into a single dimension using learned weights.
+        
+        Args:
+            tokens: Tensor of shape [B, ..., D] where D is the number of dimensions.
+            weights: Tensor of shape [D] containing learned weights.
+        Returns:
+            Tensor of shape [B, ...] containing the encoded tokens.
+            
+        """
+        view_shape = [1] * (tokens.dim() - 1) + [weights.numel()] # reshape weights to broadcast across all but last dimension of tokens
+        return (tokens.long() * weights.view(*view_shape)).sum(dim=-1).long()
+
+    def _build_prior_state(
+        self,
+        h: Tensor,
+        prior_scale: Tensor,
+    ) -> Optional[_PriorProposalState]:
+        if not self.include_prior_in_proposal:
+            return None
+        if float(prior_scale.item()) == 0.0:
+            return None
+
+        prior_model = self._get_prior_model()
+        if prior_model is None:
+            return None
+
+        tokens, _ = prior_model.tokens_from_latent(h) # tokens shape [B, T, D] where D is num_latent_vars
+        inputs, targets = prior_model.prepare_teacher_forcing(tokens)
+
+        in_table_full = prior_model.get_input_embedding_weight() # [V_in, D_in]
+        out_table_full = prior_model.get_output_embedding_weight() # [V_out, D_out]
+
+        # in_table size and out_table size should both be >= vocab_size, 
+        # where vocab_size is the max token index + 1. This ensures all tokens have valid embeddings.
+        vocab_size = int(getattr(prior_model, "vocab_size", out_table_full.shape[0]))
+        if in_table_full.shape[0] <= int(getattr(prior_model, "sos_token", vocab_size)):
+            return None
+        if out_table_full.shape[0] < vocab_size:
+            return None
+
+        input_embeddings = F.embedding(inputs.long(), in_table_full).detach().requires_grad_(True)
+        logits, _, hidden = prior_model.forward_logits_from_input_embeddings(
+            input_embeddings,
+            return_hidden=True,
+        ) # logits shape [B, T, V_out], hidden shape [B, T, D_hidden]
+        if logits.shape[:2] != targets.shape:
+            # If the prior model changes the sequence length (e.g. via pooling), 
+            # we cannot reliably compute token-level proposal scores, so we skip the prior component.
+            return None
+
+        # 使用内置的交叉熵直接计算 sum([-log P(y|x)])，更加简洁和高效
+        energy_input = prior_scale * F.cross_entropy(
+            logits.reshape(-1, logits.shape[-1]), 
+            targets.reshape(-1), 
+            reduction="sum"
+        )
+        
+        grad_shifted = torch.autograd.grad(
+            energy_input,
+            input_embeddings,
+            retain_graph=True,
+            only_inputs=True,
+        )[0] # shape [B, T, D_in]
+
+        # The proposal scores will be computed for candidate tokens at each position. 
+        # The gradient from the prior energy w.r.t. the input embedding at each position indicates how changing the token at that position would affect the prior energy.
+        # The reason for the "shift" in grad_shifted is that the input embedding at position i affects the prior energy through the output logits at position i, 
+        # which in turn depend on the hidden state at position i.
+        grad_input = torch.zeros_like(grad_shifted)
+        if grad_shifted.shape[1] > 1:
+            grad_input[:, :-1, :] = grad_shifted[:, 1:, :]
+
+        #! Important: must be detached to avoid backprop through the prior model when computing proposal scores, which would violate the MCMC framework.
+        out_table = out_table_full[:vocab_size].detach() # we don't need the SOS token
+        hidden = hidden.detach()
+        targets = targets.long()
+
+        # Direct application of chain rule gives us the gradient of the prior energy w.r.t. the output embeddings at each position, 
+        # which is what we need to compute proposal scores for candidate tokens at that position.
+        # d(-log(p_y)) / d(E_y) = (p_y - 1) * h
+        logits_detached = torch.einsum("btd,vd->btv", hidden, out_table)
+        probs = F.softmax(logits_detached, dim=-1)
+        target_probs = probs.gather(-1, targets.unsqueeze(-1)).squeeze(-1)
+        
+        grad_output = prior_scale * (target_probs - 1.0).unsqueeze(-1) * hidden
+
+        num_categories = list(getattr(prior_model, "num_categories", []))
+        if len(num_categories) == 0:
+            num_categories = [vocab_size]
+        if len(num_categories) != h.shape[-1]:
+            return None
+
+        category_weights = compute_category_weights(
+            num_categories,
+            device=h.device,
+            dtype=torch.long,
+        )
+
+        return _PriorProposalState(
+            grad_input=grad_input,
+            grad_output=grad_output,
+            input_table=in_table_full[:vocab_size].detach(),
+            output_table=out_table,
+            num_categories=num_categories,
+            category_weights=category_weights,
+            weight_tying=bool(getattr(prior_model, "uses_weight_tying", False)),
+        )
+
+    def _prior_site_scores(
+        self,
+        prior_state: _PriorProposalState,
+        flat_tokens: Tensor,
+        position: int,
+        latent_var: int,
+    ) -> Optional[Tensor]:
+        K = int(prior_state.num_categories[latent_var])
+        current_site = flat_tokens[:, position, :].long() # shape [B, num_latent_vars]
+        if len(prior_state.num_categories) == 1:
+            candidate_ids = torch.arange(K, device=flat_tokens.device).view(1, K)
+            candidate_ids = candidate_ids.expand(flat_tokens.shape[0], -1) # shape [B, K]
+            current_ids = current_site[:, 0] # shape [B]
+        else:
+            candidate_grid = current_site.unsqueeze(1).repeat(1, K, 1) # shape [B, K, num_latent_vars]
+            candidate_values = torch.arange(K, device=flat_tokens.device).view(1, K)
+            candidate_grid[:, :, latent_var] = candidate_values
+            candidate_ids = self._encode_multidim_tokens(
+                candidate_grid,
+                prior_state.category_weights,
+            )
+            current_ids = self._encode_multidim_tokens(
+                current_site,
+                prior_state.category_weights,
+            )
+
+        if candidate_ids.max().item() >= prior_state.input_table.shape[0]:
+            return None
+
+        grad_in = prior_state.grad_input[:, position, :]
+        grad_out = prior_state.grad_output[:, position, :]
+
+        cur_in = prior_state.input_table[current_ids]
+        cand_in = prior_state.input_table[candidate_ids]
+        score_in = self._proposal_scores(
+            grad_site=grad_in,
+            current_embed=cur_in,
+            candidate_embed=cand_in,
+            alpha=self.alpha_prior_input,
+        )
+
+        if prior_state.weight_tying:
+            # Input and output embedding tables are identical (shared weights).
+            # The total gradient of f_psi w.r.t. the shared embedding at position i
+            # is grad_in[i] + grad_out[i].  We apply a single norm constraint
+            # (not two), so only one call to _proposal_scores is needed.
+            combined_grad = grad_in + grad_out
+            return self._proposal_scores(
+                grad_site=combined_grad,
+                current_embed=cur_in,
+                candidate_embed=cand_in,
+                alpha=self.alpha_prior_input,
+            )
+
+        # Without weight tying the two embedding spaces are distinct.
+        # Compute scores independently in each space and sum them,
+        # following docs/ncg_in_jsa_perceptual.md 思路2.
+        cur_out = prior_state.output_table[current_ids]
+        cand_out = prior_state.output_table[candidate_ids]
+        score_out = self._proposal_scores(
+            grad_site=grad_out,
+            current_embed=cur_out,
+            candidate_embed=cand_out,
+            alpha=self.alpha_prior_output,
+        )
+        return score_in + score_out
+
+    @staticmethod
+    def _as_batch_vector(t: Tensor) -> Tensor:
+        """Ensure the input tensor is of shape [B] for batch processing, flattening any additional dimensions."""
+        if t.dim() == 1:
+            return t
+        return t.view(t.shape[0], -1).mean(dim=1)
+
+    def _compute_site_probs(
+        self,
+        latent_var: int,
+        pos: int,
+        flat_tokens: Tensor,
+        embedding_weight: Tensor,
+        grad_grid: Tensor,
+        prior_state: Optional[_PriorProposalState],
+    ) -> Tuple[Tensor, Tensor]:
+        """Compute proposal probabilities for a specific spatial site and latent variable."""
+        batch_size = flat_tokens.shape[0]
+        cur_idx = flat_tokens[:, pos, latent_var].long()
+        cur_embed = embedding_weight[cur_idx]
+        grad_site = grad_grid[:, pos]
+
+        score_total = self._proposal_scores(
+            grad_site=grad_site,
+            current_embed=cur_embed,
+            candidate_embed=embedding_weight.unsqueeze(0).expand(batch_size, -1, -1),
+            alpha=self.alpha,
+        )
+
+        if prior_state is not None:
+            prior_scores = self._prior_site_scores(
+                prior_state=prior_state,
+                flat_tokens=flat_tokens,
+                position=pos,
+                latent_var=latent_var,
+            )
+            if prior_scores is not None and prior_scores.shape == score_total.shape:
+                score_total = score_total + prior_scores
+
+        score_total = self._mask_current_token(score_total, cur_idx)
+        probs = self._scores_to_probs(score_total)
+        return probs, cur_idx
+
     def _propose(self, x: Tensor, h: Tensor):
         distortion_model, decoder = self._get_decoder_and_embeddings()
-        grad = self._embedding_gradients(x, h)
+        distortion_scale, prior_scale = self._resolve_energy_scales(x)
+
+        grad = self._distortion_embedding_gradients(x, h, distortion_scale)
         grad_splits = self._split_gradients(grad, decoder)
+        prior_state = self._build_prior_state(h, prior_scale)
 
         proposal_log_prob = torch.zeros(h.shape[0], device=h.device)
-        h_new = h.clone()
+        h_new = h.clone().long()
         selected = []
 
+        batch_size = h.shape[0]
+        num_latent_vars = h.shape[-1]
         num_positions = h[..., 0].numel() // h.shape[0]
         num_sites = min(self.num_sites, num_positions)
+        if num_sites <= 0:
+            return h_new.float(), proposal_log_prob, selected
+
         position_ids = torch.randperm(num_positions, device=h.device)[:num_sites]
 
+        flat_tokens = h_new.view(batch_size, num_positions, num_latent_vars)
+
         for latent_var, (embedding, grad_chunk) in enumerate(zip(decoder.embeddings, grad_splits)):
-            token_grid = self._flatten_index(h_new, latent_var)
+            token_grid = flat_tokens[:, :, latent_var]
             grad_grid = grad_chunk.reshape(h.shape[0], num_positions, -1)
             embedding_weight = embedding.weight.detach()
 
             for pos in position_ids.tolist():
-                cur_idx = token_grid[:, pos]
-                cur_embed = embedding_weight[cur_idx]
-                grad_site = grad_grid[:, pos]
-                scores = self._site_scores(embedding_weight, grad_site, cur_idx, cur_embed)
-                probs = F.softmax(scores, dim=-1)
+                probs, cur_idx = self._compute_site_probs(
+                    latent_var, pos, flat_tokens, embedding_weight, grad_grid, prior_state
+                )
+
                 sampled_idx = torch.multinomial(probs, num_samples=1).squeeze(1)
                 proposal_log_prob = proposal_log_prob + torch.log(
                     probs.gather(1, sampled_idx.unsqueeze(1)).squeeze(1).clamp_min(1e-12)
@@ -166,30 +480,38 @@ class NCGSampler(BaseSampler):
                 token_grid[:, pos] = sampled_idx
                 selected.append((latent_var, pos))
 
-            h_new[..., latent_var] = token_grid.view_as(h_new[..., latent_var]).float()
+            flat_tokens[:, :, latent_var] = token_grid
 
-        return h_new, proposal_log_prob, selected
+        h_new = flat_tokens.view_as(h_new)
+
+        return h_new.float(), proposal_log_prob, selected
 
     def _reverse_log_prob(self, x: Tensor, h_from: Tensor, h_to: Tensor, selected):
         distortion_model, decoder = self._get_decoder_and_embeddings()
-        grad = self._embedding_gradients(x, h_to)
+        distortion_scale, prior_scale = self._resolve_energy_scales(x)
+
+        grad = self._distortion_embedding_gradients(x, h_to, distortion_scale)
         grad_splits = self._split_gradients(grad, decoder)
+        prior_state = self._build_prior_state(h_to, prior_scale)
 
         num_positions = h_to[..., 0].numel() // h_to.shape[0]
         reverse_log_prob = torch.zeros(h_to.shape[0], device=h_to.device)
+        batch_size = h_to.shape[0]
+        h_to_flat = h_to.long().view(batch_size, num_positions, h_to.shape[-1])
+        h_from_flat = h_from.long().view(batch_size, num_positions, h_from.shape[-1])
 
         for latent_var, pos in selected:
             embedding = decoder.embeddings[latent_var]
             embedding_weight = embedding.weight.detach()
             grad_grid = grad_splits[latent_var].reshape(h_to.shape[0], num_positions, -1)
-            token_grid_to = h_to[..., latent_var].long().reshape(h_to.shape[0], num_positions)
-            token_grid_from = h_from[..., latent_var].long().reshape(h_from.shape[0], num_positions)
-            cur_idx = token_grid_to[:, pos]
-            old_idx = token_grid_from[:, pos]
-            cur_embed = embedding_weight[cur_idx]
-            grad_site = grad_grid[:, pos]
-            scores = self._site_scores(embedding_weight, grad_site, cur_idx, cur_embed)
-            probs = F.softmax(scores, dim=-1)
+            token_grid_from = h_from_flat[:, :, latent_var]
+
+            old_idx = token_grid_from[:, pos].long()
+            
+            probs, cur_idx = self._compute_site_probs(
+                latent_var, pos, h_to_flat, embedding_weight, grad_grid, prior_state
+            )
+
             reverse_log_prob = reverse_log_prob + torch.log(
                 probs.gather(1, old_idx.unsqueeze(1)).squeeze(1).clamp_min(1e-12)
             )
@@ -199,13 +521,19 @@ class NCGSampler(BaseSampler):
     def step(self, x: Tensor, h: Tensor) -> Tensor:
         h_old = self._prepare_h(h)
         h_new, log_q_forward, selected = self._propose(x, h_old)
+        if len(selected) == 0:
+            return h_old.float()
+
         log_q_reverse = self._reverse_log_prob(x, h_old, h_new, selected)
 
-        log_p_old = self.joint_model.log_joint_prob(x, h_old)
-        log_p_new = self.joint_model.log_joint_prob(x, h_new)
+        log_p_old = self._as_batch_vector(self.joint_model.log_joint_prob(x, h_old))
+        log_p_new = self._as_batch_vector(self.joint_model.log_joint_prob(x, h_new))
         log_accept = (log_p_new + log_q_reverse) - (log_p_old + log_q_forward)
-        accept_prob = torch.exp(torch.clamp(log_accept, max=0.0, min=-100.0))
-        accept = torch.rand_like(accept_prob) < accept_prob
+        
+        # 使用对数空间的均匀分布判定接受率，免去 exp 和 clamp 操作，防止极小概率下的截断错误
+        log_u = torch.log(torch.rand_like(log_accept).clamp_min(1e-8))
+        accept = log_u < log_accept
+        
         accept_view = accept.view(-1, *([1] * (h_old.dim() - 1)))
         h_next = torch.where(accept_view, h_new, h_old)
         return h_next.float()

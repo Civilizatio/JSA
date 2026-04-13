@@ -850,18 +850,23 @@ class JointModelCategoricalEnergy(BaseJointModel):
         component_all = outputs.components
 
         loss = energy_all.mean()
+        resolved_stage = self._resolve_stage(stage)
         
         # When pixel parameters use reduction='sum' for strict probabilistic correctness 
         # during sampling, the resulting loss scale is immense. 
         # Dividing by data dimensionality decouples the optimization scale (learning rate)
         # from the mathematically rigid energy landscape.
         D = x.numel() / x.shape[0] if x.shape[0] > 0 else 1.0
-        
-        # Add temperature normalization term according to EBM framework
-        # to prevent temperature scaling from driving T to infinity
-        c = D
-        regularization_term = c * self.log_distortion_temperature
-        loss = loss + regularization_term
+
+        temperature_regularizer = torch.zeros((), device=x.device, dtype=loss.dtype)
+        if (
+            self.temperature_mode == "learnable"
+            and resolved_stage == PerceptualTrainingStage.DECODER_PRETRAIN
+        ):
+            # Stage-1 has only positive phase, so this regularizer prevents T from drifting to +inf.
+            c = D
+            temperature_regularizer = c * self.log_distortion_temperature
+            loss = loss + temperature_regularizer
 
         scale_factor = D if normalize_loss_by_dim else 1.0
         
@@ -880,6 +885,7 @@ class JointModelCategoricalEnergy(BaseJointModel):
                     summary[key] = value.mean()
                 else:
                     summary[key] = value.mean() / scale_factor
+            summary["temperature_regularizer"] = temperature_regularizer / scale_factor
 
         return JointLossOutput(
             loss=loss,

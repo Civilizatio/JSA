@@ -6,6 +6,7 @@ model:
     force_stage: prior_pretrain
     num_mis_steps: 1
     parallel_mis_sampling: true
+    stage2_use_mis_sampling: false
     num_validation_mis_steps: 15
     init_from_ckpt: ./egs/cifar10/perceptual_jsa/cifar10_stage1_decoder/2026-03-29_12-47-24/checkpoints/step=025872-epoch=000131.ckpt
     pkeep: 0.9
