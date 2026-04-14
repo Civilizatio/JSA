@@ -957,6 +957,11 @@ def main(exp_dir, config_path, checkpoint_path, run_config=None):
                 model_args["global_only_steps"] = 10000
             if "block_strategy_prob" not in model_args:
                 model_args["block_strategy_prob"] = 0.5
+                
+            if "ncg_sampler" in model_args and isinstance(model_args["ncg_sampler"], dict):
+                if "num_steps" in model_args["ncg_sampler"]:
+                    logger.info("Compatibility patch: Renaming 'num_steps' to 'num_sweeps' in ncg_sampler.")
+                    model_args["ncg_sampler"]["num_sweeps"] = model_args["ncg_sampler"].pop("num_steps")
             
         # Write the patched config to a temporary file
         temp_config_path = config_path + ".tmp.yaml"
@@ -1025,7 +1030,7 @@ if __name__ == "__main__":
         # "egs/cifar10/jsa/categorical_prior_conv/2026-01-15_15-41-30",
         # "egs/cifar10/jsa/categorical_prior_conv/2026-01-15_15-43-39",
         # "egs/cifar10/vqgan/vq_gan_cifar10/2026-02-05_21-02-55",
-        "egs/cifar10/perceptual_jsa/cifar10_stage1_decoder/2026-04-09_15-00-25",
+        "egs/cifar10/perceptual_jsa/cifar10_stage1_decoder/2026-04-10_10-24-48",
         # "egs/imagenet/jsa/lightning_logs/2026-02-25_15-22-44",
     ]
     target_class_names = ["cat"]

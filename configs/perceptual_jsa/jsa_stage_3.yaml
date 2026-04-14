@@ -4,9 +4,9 @@
 model:
   init_args:
     force_stage: full_ebm
-    num_mis_steps: 8
+    num_mis_steps: 2
     parallel_mis_sampling: true
-    init_from_ckpt: ./egs/cifar10/perceptual_jsa/cifar10_stage2_prior/2026-04-03_10-03-35/checkpoints/step=039491-epoch=000100.ckpt
+    init_from_ckpt: egs/cifar10/perceptual_jsa/cifar10_stage2_prior/2026-04-13_23-38-47/checkpoints/last.ckpt
     stage3_negative_rounds: 1
     num_validation_mis_steps: 8
     joint_negative_sampler:
@@ -20,14 +20,14 @@ model:
       _target_: src.samplers.langevin_sampler.LangevinSampler
       step_size: 0.005
       noise_scale: 0.05
-      num_steps: 15
+      num_steps: 10
       clamp_range: [-1.0, 1.0]
       detach_between_steps: true
     ncg_sampler:
       _target_: src.samplers.ncg_sampler.NCGSampler
       alpha: 1.0
       p_norm: 2.0
-      num_sweeps: 3
+      num_sweeps: 1
       num_sites: 8
       temperature: 1.0
       include_current_token: true

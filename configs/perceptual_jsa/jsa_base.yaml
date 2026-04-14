@@ -132,7 +132,7 @@ model:
       alpha: 1.0
       p_norm: 2.0
       num_sweeps: 1
-      num_sites: 2
+      num_sites: 8
       temperature: 1.0
       include_current_token: true
       include_prior_in_proposal: true

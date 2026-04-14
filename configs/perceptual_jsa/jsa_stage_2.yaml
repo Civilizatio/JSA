@@ -4,11 +4,10 @@
 model:
   init_args:
     force_stage: prior_pretrain
-    num_mis_steps: 1
     parallel_mis_sampling: true
     stage2_use_mis_sampling: false
-    num_validation_mis_steps: 15
-    init_from_ckpt: ./egs/cifar10/perceptual_jsa/cifar10_stage1_decoder/2026-03-29_12-47-24/checkpoints/step=025872-epoch=000131.ckpt
+    num_validation_mis_steps: 10
+    init_from_ckpt: ./egs/cifar10/perceptual_jsa/cifar10_stage1_decoder/2026-04-09_15-00-25/checkpoints/last.ckpt
     pkeep: 0.9
 data:
   class_path: src.data.cifar10.CIFAR10DataModule
@@ -21,5 +20,36 @@ trainer:
   logger:
     init_args:
       name: cifar10_stage2_prior
+  callbacks:
+    - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+      init_args:
+        monitor: valid/prior_nll
+        mode: min
+        save_top_k: 3
+        filename: "{step:06}-{epoch:06}"
+        save_last: true
+    - class_path: lightning.pytorch.callbacks.LearningRateMonitor
+      init_args:
+        logging_interval: step
+    - class_path: src.utils.callbacks.grad_norm_callback.GradientNorm
+      init_args:
+        norm_type: 2
+        log_every_n_steps: 1
+    - class_path: src.utils.callbacks.save_model_summary_callback.LogModelSummary
+      init_args:
+        max_depth: 2
+    - class_path: src.utils.callbacks.image_logger_callback.ImageLogger
+      init_args:
+        batch_frequency: 750
+        max_images: 16
+        nrow: 4
+        clamp: true
+    - class_path: src.utils.callbacks.codebook_stats_callback.CodebookStats
+      init_args:
+        stage: valid
+        log_prefix: valid
+        plot: true
+        sort_by_counter: true
+        use_log_scale: false
   max_steps: 100000
   strategy: ddp_find_unused_parameters_true
