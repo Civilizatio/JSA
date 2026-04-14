@@ -301,6 +301,14 @@ class PerceptualJSA(JSA):
             p for p in self.joint_model.distortion_model.parameters() if p.requires_grad
         ]
 
+        # Prevent Temperature Collapse in Stage 3:
+        # Optimizing EBM difference (pos - neg) with a learnable divisor T forces T -> 0.
+        if self.force_stage == PerceptualTrainingStage.FULL_EBM:
+            if hasattr(self.joint_model, "log_distortion_temperature"):
+                self.joint_model.log_distortion_temperature.requires_grad = False
+                if self.train_logger is not None:
+                    self.train_logger.info("Stage 3 active: Freezing 'log_distortion_temperature' to prevent EBM temperature collapse.")
+
         # Include any learnable parameters defined directly on the joint_model (e.g., log_distortion_temperature)
         joint_direct_params = [
             p
